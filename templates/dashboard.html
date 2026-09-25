@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>لوحة التحكم وقائمة حظر مستأجري السيارات | Car Rental Blacklist</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;800;900&display=swap" rel="stylesheet">
+  <style>body { font-family: 'Cairo', sans-serif; }</style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen flex flex-col">
+  <!-- Header Navbar -->
+  <header class="border-b border-slate-800 bg-slate-900/90 backdrop-blur sticky top-0 z-40">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-20 flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <div class="w-12 h-12 rounded-xl bg-gradient-to-tr from-rose-600 via-amber-600 to-amber-500 flex items-center justify-center text-2xl shadow-lg shadow-rose-900/30 ring-1 ring-rose-500/40">
+          🚗
+        </div>
+        <div>
+          <div class="flex items-center gap-2">
+            <h1 class="text-xl font-extrabold text-white">منظومة حظر مستأجري السيارات</h1>
+            <span class="bg-rose-500/10 text-rose-400 text-xs font-semibold px-2.5 py-0.5 rounded-full border border-rose-500/30">
+              شبكة مكاتب التأجير
+            </span>
+          </div>
+          <p class="text-xs text-slate-400">الاستعلام المباشر عن السجل الائتماني لمستأجري المركبات</p>
+        </div>
+      </div>
+
+      <div id="userHeaderBar" class="flex items-center gap-3">
+        <!-- JS Populated user status -->
+      </div>
+    </div>
+  </header>
+
+  <main class="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
+    <!-- Unapproved / Blocked Alert Banner -->
+    <div id="blockedBanner" class="hidden p-5 bg-rose-500/10 border border-rose-500/30 rounded-2xl text-rose-300 text-xs font-bold space-y-2">
+      <div class="flex items-center gap-2 text-sm text-rose-400">
+        <span>🛑</span>
+        <span>تنبيه أمني من جدار حماية المنظومة (@approved_required)</span>
+      </div>
+      <p id="blockedBannerText">يجب تسجيل الدخول بحساب مكتب تأجير مفعل ومعتمد للاستعلام أو إضافة بلاغات.</p>
+    </div>
+
+    <!-- Quick Stats Cards -->
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div class="bg-slate-900 border border-slate-800 p-5 rounded-2xl flex items-center justify-between">
+        <div>
+          <p class="text-slate-400 text-xs font-medium">المستأجرين المحظورين بالشبكة</p>
+          <p id="totalCount" class="text-3xl font-extrabold text-white mt-1">0</p>
+        </div>
+        <div class="w-12 h-12 bg-rose-500/10 border border-rose-500/30 rounded-xl flex items-center justify-center text-2xl">🚫</div>
+      </div>
+
+      <div class="bg-slate-900 border border-slate-800 p-5 rounded-2xl flex items-center justify-between">
+        <div>
+          <p class="text-slate-400 text-xs font-medium">إجمالي المبالغ والتلفيات المتعثرة</p>
+          <p id="totalDebt" class="text-3xl font-extrabold text-emerald-400 mt-1">0 <span class="text-sm font-normal text-slate-400">{{ currency if currency else 'د.ع' }}</span></p>
+        </div>
+        <div class="w-12 h-12 bg-emerald-500/10 border border-emerald-500/30 rounded-xl flex items-center justify-center text-2xl">💵</div>
+      </div>
+    </div>
+
+    <!-- Search Bar Section -->
+    <div class="bg-slate-900 border border-slate-800 p-6 rounded-2xl space-y-4">
+      <h2 class="text-base font-bold text-white flex items-center gap-2">
+        <span>🔍</span>
+        <span>شريط البحث الذكي عن مستأجر سيارة قبل العقد</span>
+      </h2>
+      
+      <div class="flex flex-col md:flex-row items-center gap-4">
+        <div class="relative flex-1 w-full">
+          <input type="text" id="searchInput"
+            placeholder="ادخل رقم الهوية الوطنية / رقم جواز السفر / رقم رخصة القيادة / اسم المستأجر..."
+            class="w-full pl-4 pr-12 py-3.5 bg-slate-950 border border-slate-800 rounded-xl text-slate-100 placeholder-slate-500 focus:outline-none focus:border-rose-500 text-sm">
+        </div>
+        <button id="searchBtn" class="w-full md:w-auto px-6 py-3.5 bg-rose-600 hover:bg-rose-500 text-white font-bold rounded-xl text-sm transition">
+          استعلام مباشر
+        </button>
+      </div>
+    </div>
+
+    <!-- Add Car Tenant Blacklist Form -->
+    <div class="bg-slate-900 border border-slate-800 p-6 rounded-2xl space-y-6">
+      <div class="border-b border-slate-800 pb-4">
+        <h2 class="text-lg font-extrabold text-white flex items-center gap-2">
+          <span>➕</span>
+          <span>نموذج إضافة مستأجر سيارات محظور جديد</span>
+        </h2>
+        <p class="text-xs text-slate-400 mt-1">تأكد من إدخال رقم الهوية ورخصة القيادة بدقة لحماية كافة المكاتب المشاركة</p>
+      </div>
+
+      <div id="addFormAlert" class="hidden p-3.5 rounded-xl text-xs font-bold"></div>
+
+      <form id="addBlacklistForm" class="space-y-4">
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div>
+            <label class="block text-xs font-bold text-slate-300 mb-1">اسم المستأجر الثلاثي/الرباعي *</label>
+            <input type="text" id="tenant_name" required placeholder="مثال: خالد عبدالسلام الشمري"
+              class="w-full px-4 py-3 bg-slate-950 border border-slate-800 rounded-xl text-slate-100 text-xs focus:border-rose-500">
+          </div>
+
+          <div>
+            <label class="block text-xs font-bold text-slate-300 mb-1">رقم الهوية الوطنية / جواز السفر *</label>
+            <input type="text" id="national_id" required placeholder="1092837482"
+              class="w-full px-4 py-3 bg-slate-950 border border-slate-800 rounded-xl text-slate-100 text-xs font-mono focus:border-rose-500">
+          </div>
+
+          <div>
+            <label class="block text-xs font-bold text-slate-300 mb-1">رقم رخصة القيادة *</label>
+            <input type="text" id="license_number" required placeholder="LIC-9283710"
+              class="w-full px-4 py-3 bg-slate-950 border border-slate-800 rounded-xl text-slate-100 text-xs font-mono focus:border-rose-500">
+          </div>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <label class="block text-xs font-bold text-slate-300 mb-1">سبب الحظر الرئيسي *</label>
+            <select id="reason" required class="w-full px-4 py-3 bg-slate-950 border border-slate-800 rounded-xl text-slate-100 text-xs focus:border-rose-500">
+              <option value="عدم دفع الإيجار والامتناع عن السداد">عدم دفع الإيجار والامتناع عن السداد</option>
+              <option value="حادث مروري وتخريب السيارة">حادث مروري وتخريب السيارة</option>
+              <option value="تأخير مستمر وإخفاء السيارة">تأخير مستمر وإخفاء السيارة</option>
+              <option value="تجاوز حدود السرعة ومخالفات باهظة">تجاوز حدود السرعة ومخالفات باهظة</option>
+              <option value="محاولة تهريب أو تعديل المركبة">محاولة تهريب أو تعديل المركبة</option>
+            </select>
+          </div>
+
+          <div>
+            <label class="block text-xs font-bold text-slate-300 mb-1">المبلغ المالي المتعثر (دينار عراقي - د.ع)</label>
+            <input type="number" id="debt_amount" placeholder="0.00"
+              class="w-full px-4 py-3 bg-slate-950 border border-slate-800 rounded-xl text-slate-100 text-xs focus:border-rose-500">
+          </div>
+        </div>
+
+        <button type="submit" class="w-full py-3.5 bg-rose-600 hover:bg-rose-500 text-white font-extrabold text-sm rounded-xl shadow-lg shadow-rose-900/30 transition">
+          إدراج المستأجر في قائمة الحظر الموحدة
+        </button>
+      </form>
+    </div>
+
+    <!-- Blacklist Table Grid -->
+    <div class="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-4">
+      <h2 class="text-lg font-bold text-white flex items-center justify-between">
+        <span>جدول المستأجرين المحظورين حالياً</span>
+        <span id="recordCountBadge" class="text-xs bg-slate-800 px-3 py-1 rounded-full text-slate-400">0 سجلات</span>
+      </h2>
+
+      <div class="overflow-x-auto">
+        <table class="w-full text-right text-xs">
+          <thead class="bg-slate-950 text-slate-400 border-b border-slate-800 uppercase font-bold">
+            <tr>
+              <th class="p-3.5">اسم المستأجر</th>
+              <th class="p-3.5">رقم الهوية / الجواز</th>
+              <th class="p-3.5">رقم رخصة القيادة</th>
+              <th class="p-3.5">سبب الحظر</th>
+              <th class="p-3.5">المبلغ المتعثر</th>
+              <th class="p-3.5">المكتب المُبلغ</th>
+              <th class="p-3.5 text-center">الإجراء</th>
+            </tr>
+          </thead>
+          <tbody id="blacklistTableBody" class="divide-y divide-slate-800/60">
+            <!-- Populated via JS -->
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </main>
+
+  <script>
+    const token = localStorage.getItem('tb_token') || '';
+
+    // Fetch Auth Status
+    async function checkUserAuth() {
+      const userHeaderBar = document.getElementById('userHeaderBar');
+      try {
+        const res = await fetch('/api/auth/me', {
+          headers: token ? { Authorization: `Bearer ${token}` } : {}
+        });
+        const data = await res.json();
+
+        if (data.authenticated && data.user) {
+          userHeaderBar.innerHTML = `
+            <div class="text-right">
+              <span class="block text-xs font-bold text-slate-200">${data.user.office_name}</span>
+              <span class="text-[10px] text-emerald-400">مكتب معتمد (Approved)</span>
+            </div>
+            <button onclick="logout()" class="px-3 py-1.5 bg-slate-800 hover:bg-rose-600/20 text-slate-300 hover:text-rose-400 text-xs font-bold rounded-lg border border-slate-700 transition">
+              خروج
+            </button>
+          `;
+        } else {
+          userHeaderBar.innerHTML = `
+            <a href="/login.html" class="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold rounded-xl border border-slate-700 transition">
+              تسجيل الدخول
+            </a>
+            <a href="/signup.html" class="px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold rounded-xl transition">
+              تسجيل مكتب جديد
+            </a>
+          `;
+        }
+      } catch (e) { console.error(e); }
+    }
+
+    // Fetch Blacklist Records
+    async function loadBlacklist(query = '') {
+      const tableBody = document.getElementById('blacklistTableBody');
+      const blockedBanner = document.getElementById('blockedBanner');
+      
+      try {
+        const res = await fetch(`/api/blacklist/search?q=${encodeURIComponent(query)}`, {
+          headers: token ? { Authorization: `Bearer ${token}` } : {}
+        });
+        const data = await res.json();
+
+        if (res.status === 401 || res.status === 403) {
+          blockedBanner.classList.remove('hidden');
+          tableBody.innerHTML = `<tr><td colspan="7" class="p-8 text-center text-slate-500">حسابك غير مصرح له لعرض البيانات حتى قيام الإدارة بالموافقة على حساب المكتب.</td></tr>`;
+          return;
+        }
+
+        blockedBanner.classList.add('hidden');
+        const records = data.records || [];
+        document.getElementById('totalCount').innerText = records.length;
+        document.getElementById('recordCountBadge').innerText = `${records.length} سجلات`;
+
+        const totalDebtVal = records.reduce((sum, r) => sum + (r.debt_amount || 0), 0);
+        document.getElementById('totalDebt').innerHTML = `${totalDebtVal.toLocaleString('ar-IQ')} <span class="text-sm font-normal text-slate-400">دينار عراقي (د.ع)</span>`;
+
+        if (records.length === 0) {
+          tableBody.innerHTML = `<tr><td colspan="7" class="p-8 text-center text-slate-500">لم يتم العثور على أي مستأجرين محظورين طابقين للبحث.</td></tr>`;
+          return;
+        }
+
+        tableBody.innerHTML = records.map(r => `
+          <tr class="hover:bg-slate-800/40 transition">
+            <td class="p-3.5 font-bold text-slate-100">${r.tenant_name}</td>
+            <td class="p-3.5 font-mono text-amber-400">${r.national_id}</td>
+            <td class="p-3.5 font-mono text-emerald-400">${r.license_number || 'غير مسجل'}</td>
+            <td class="p-3.5 text-rose-300">${r.reason}</td>
+            <td class="p-3.5 text-emerald-400 font-bold">${r.debt_amount ? r.debt_amount.toLocaleString('ar-IQ') + ' د.ع' : 'بدون مالية'}</td>
+            <td class="p-3.5 text-slate-400">${r.reported_by_office || 'مكتب تأجير'}</td>
+            <td class="p-3.5 text-center">
+              <button onclick="deleteTenant('${r.id}')" class="px-3 py-1 bg-rose-500/10 hover:bg-rose-600 text-rose-400 hover:text-white rounded-lg border border-rose-500/20 text-[11px] font-bold transition">
+                تسوية وحذف
+              </button>
+            </td>
+          </tr>
+        `).join('');
+
+      } catch (err) {
+        console.error(err);
+      }
+    }
+
+    // Submit New Blacklist Record
+    document.getElementById('addBlacklistForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const formAlert = document.getElementById('addFormAlert');
+
+      try {
+        const res = await fetch('/api/blacklist/add', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`
+          },
+          body: JSON.stringify({
+            tenant_name: document.getElementById('tenant_name').value,
+            national_id: document.getElementById('national_id').value,
+            license_number: document.getElementById('license_number').value,
+            reason: document.getElementById('reason').value,
+            debt_amount: document.getElementById('debt_amount').value
+          })
+        });
+
+        const data = await res.json();
+
+        if (res.ok && data.success) {
+          formAlert.innerText = data.message;
+          formAlert.className = 'p-3.5 rounded-xl text-xs font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/30';
+          formAlert.classList.remove('hidden');
+          document.getElementById('addBlacklistForm').reset();
+          loadBlacklist();
+        } else {
+          formAlert.innerText = data.message || 'فشلت عملية الإضافة';
+          formAlert.className = 'p-3.5 rounded-xl text-xs font-bold bg-rose-500/10 text-rose-400 border border-rose-500/30';
+          formAlert.classList.remove('hidden');
+        }
+      } catch (err) {
+        console.error(err);
+      }
+    });
+
+    // Delete Record
+    async function deleteTenant(id) {
+      if (!confirm('هل أنت تأكد من تسوية وضع المستأجر وإزالته من قائمة الحظر؟')) return;
+
+      try {
+        const res = await fetch('/api/blacklist/delete', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`
+          },
+          body: JSON.stringify({ record_id: id })
+        });
+        const data = await res.json();
+        if (data.success) {
+          loadBlacklist();
+        } else {
+          alert(data.message);
+        }
+      } catch (e) { console.error(e); }
+    }
+
+    function logout() {
+      localStorage.removeItem('tb_token');
+      window.location.href = '/login.html';
+    }
+
+    document.getElementById('searchBtn').addEventListener('click', () => {
+      loadBlacklist(document.getElementById('searchInput').value);
+    });
+
+    document.getElementById('searchInput').addEventListener('keyup', (e) => {
+      if (e.key === 'Enter') loadBlacklist(e.target.value);
+    });
+
+    checkUserAuth();
+    loadBlacklist();
+  </script>
+</body>
+</html>
