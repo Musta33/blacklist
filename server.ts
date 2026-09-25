@@ -586,7 +586,15 @@ app.get('/dashboard.html', (req, res) => res.sendFile(path.resolve('./templates/
 
 async function startServer() {
   if (process.env.NODE_ENV === 'production') {
-    app.use(express.static(path.resolve('./dist')));
+    app.use(express.static(path.resolve('./dist'), {
+      setHeaders: (res, filePath) => {
+        if (filePath.endsWith('.js') || filePath.endsWith('.mjs')) {
+          res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+        } else if (filePath.endsWith('.css')) {
+          res.setHeader('Content-Type', 'text/css; charset=utf-8');
+        }
+      }
+    }));
     app.get('*', (req, res, next) => {
       if (req.path.startsWith('/api')) return next();
       res.sendFile(path.resolve('./dist/index.html'));
