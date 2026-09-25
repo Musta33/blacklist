@@ -585,6 +585,15 @@ app.get('/signup.html', (req, res) => res.sendFile(path.resolve('./templates/sig
 app.get('/waiting.html', (req, res) => res.sendFile(path.resolve('./templates/waiting.html')));
 app.get('/dashboard.html', (req, res) => res.sendFile(path.resolve('./templates/dashboard.html')));
 
+app.get('/download-zip', (req, res) => {
+  const zipPath = path.resolve('./tenant_blacklist_hostinger_ready.zip');
+  if (fs.existsSync(zipPath)) {
+    res.download(zipPath, 'tenant_blacklist_hostinger_ready.zip');
+  } else {
+    res.status(404).send('ZIP file not found. Please run build.');
+  }
+});
+
 async function startServer() {
   const distPath = path.resolve('./dist');
   const hasDist = fs.existsSync(distPath);

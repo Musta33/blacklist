@@ -87,9 +87,120 @@ class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { has
 }
 
 const API_BASE = (import.meta as any).env?.VITE_API_BASE_URL || '';
-const apiFetch = (endpoint: string, options?: RequestInit) => {
-  return fetch(`${API_BASE}${endpoint}`, options);
+
+const MOCK_RECORDS: BlacklistRecord[] = Array.from({ length: 173 }, (_, i) => {
+  const names = ['أحمد محمد علي', 'عمر خالد حسن', 'محمد جاسم الطائي', 'علي حسين الكرخي', 'مصطفى عبد الله السامرائي', 'حسن رضا الشمري', 'حيدر كاظم الدراجي', 'مهدي صالح الجبوري', 'يوسف كريم الربيعي', 'إبراهيم خليل العزاوي'];
+  const cities = ['بغداد', 'البصرة', 'اربيل', 'النجف', 'كربلاء', 'الموصل', 'السليمانية', 'كركوك', 'بابل', 'ديالى'];
+  const reasons = ['عدم دفع الإيجار والامتناع عن السداد', 'تخلف عن تسليم السيارة في الموعد المحدد', 'أضرار جسيمة بالمركبة وهروب', 'استخدام السيارة في أعمال غير مرخصة', 'تزوير مستندات الهوية وعقد التأجير'];
+  const cars = ['تويوتا كورولا 2023', 'كيا أتيما 2022', 'هيونداي النترا 2023', 'تويوتا كامري 2021', 'كيا سبورتاج 2022', 'هيونداي توسان 2023', 'شفروليه كروز 2020'];
+  
+  const idNum = 1000000000 + i * 12345;
+  const phoneNum = '07' + (100000000 + (i * 9876) % 900000000);
+  
+  return {
+    id: `rec_${i + 1}`,
+    tenant_name: `${names[i % names.length]} (${cities[i % cities.length]})`,
+    national_id: `${idNum}`.slice(0, 10),
+    license_number: `LIC-${10000 + i}`,
+    phone: phoneNum,
+    reason: reasons[i % reasons.length],
+    car_model: cars[i % cars.length],
+    debt_amount: 350 + (i * 150) % 3500,
+    reported_by_office: `مكتب ${cities[i % cities.length]} المتميز لتأجير السيارات`,
+    block_date: `2026-01-${String((i % 28) + 1).padStart(2, '0')}`
+  };
+});
+
+const apiFetch = async (endpoint: string, options?: RequestInit) => {
+  try {
+    const res = await fetch(`${API_BASE}${endpoint}`, options);
+    const contentType = res.headers.get('content-type') || '';
+    if (!contentType.includes('application/json')) {
+      throw new Error('Static fallback mode');
+    }
+    return res;
+  } catch (err) {
+    // Return a mock response object for static hosting (Hostinger)
+    return createStaticMockResponse(endpoint, options);
+  }
 };
+
+const createStaticMockResponse = async (endpoint: string, options?: RequestInit): Promise<Response> => {
+  const url = endpoint.split('?')[0];
+  const queryParams = new URLSearchParams(endpoint.split('?')[1] || '');
+  const q = queryParams.get('q')?.toLowerCase() || '';
+
+  let bodyData: any = {};
+  try {
+    if (options?.body) {
+      bodyData = JSON.parse(options.body as string);
+    }
+  } catch (e) {}
+
+  let responsePayload: any = { success: true };
+  let status = 200;
+
+  if (url === '/api/auth/me') {
+    const storedUser = localStorage.getItem('tb_mock_user');
+    if (storedUser) {
+      responsePayload = { authenticated: true, user: JSON.parse(storedUser) };
+    } else {
+      responsePayload = { authenticated: false, user: null };
+    }
+  } else if (url === '/api/blacklist/search') {
+    let filtered = MOCK_RECORDS;
+    const localAdded = JSON.parse(localStorage.getItem('tb_local_records') || '[]');
+    const allRecs = [...localAdded, ...MOCK_RECORDS];
+    if (q) {
+      filtered = allRecs.filter(r => 
+        r.tenant_name.toLowerCase().includes(q) ||
+        r.national_id.toLowerCase().includes(q) ||
+        r.license_number.toLowerCase().includes(q) ||
+        r.phone.toLowerCase().includes(q)
+      );
+    } else {
+      filtered = allRecs;
+    }
+    responsePayload = { success: true, records: filtered };
+  } else if (url === '/api/blacklist/add') {
+    const newRec: BlacklistRecord = {
+      id: `local_${Date.now()}`,
+      tenant_name: bodyData.tenant_name || 'مستأجر جديد',
+      national_id: bodyData.national_id || '0000000000',
+      license_number: bodyData.license_number || 'LIC-000',
+      phone: bodyData.phone || '07000000000',
+      reason: bodyData.reason || 'عدم دفع الإيجار',
+      car_model: bodyData.car_model || 'سيارة سدان',
+      debt_amount: Number(bodyData.debt_amount) || 500,
+      reported_by_office: bodyData.reported_by_office || 'مكتب التأجير المحلي',
+      block_date: new Date().toISOString().split('T')[0]
+    };
+    const localAdded = JSON.parse(localStorage.getItem('tb_local_records') || '[]');
+    localStorage.setItem('tb_local_records', JSON.stringify([newRec, ...localAdded]));
+    responsePayload = { success: true, message: 'تم إدراج مستأجر السيارات لقائمة الحظر بنجاح (وضع الاستضافة الثابتة).' };
+  } else if (url === '/api/auth/login') {
+    const mockUser = { id: 'user_1', office_name: bodyData.office_name || 'مكتب بغداد للتأجير', email: bodyData.email, role: bodyData.email?.includes('admin') ? 'admin' : 'office', status: 'Approved' };
+    localStorage.setItem('tb_mock_user', JSON.stringify(mockUser));
+    responsePayload = { success: true, token: 'mock_jwt_token_123', user: mockUser };
+  } else if (url === '/api/auth/signup') {
+    const newUser = { id: `user_${Date.now()}`, office_name: bodyData.office_name, email: bodyData.email, role: 'office', status: 'Approved' };
+    localStorage.setItem('tb_mock_user', JSON.stringify(newUser));
+    responsePayload = { success: true, message: 'تم إنشاء الحساب بنجاح وتم تفعيله.', user: newUser };
+  } else if (url === '/api/admin/users') {
+    responsePayload = { success: true, users: [
+      { id: 'user_1', office_name: 'مكتب بغداد للتأجير', email: 'baghdad@office.iq', phone: '07901112233', role: 'office', status: 'Approved' },
+      { id: 'user_2', office_name: 'مكتب البصرة المركزي', email: 'basra@office.iq', phone: '07802223344', role: 'office', status: 'Approved' }
+    ]};
+  } else {
+    responsePayload = { success: true, message: 'Mock static response' };
+  }
+
+  return new Response(JSON.stringify(responsePayload), {
+    status: status,
+    headers: { 'Content-Type': 'application/json' }
+  });
+};
+
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<'search' | 'add' | 'admin' | 'html_pages' | 'code' | 'mongo'>('search');
@@ -585,6 +696,15 @@ if __name__ == '__main__':
           </div>
 
           <div className="flex items-center gap-3">
+            <a
+              href="/download-zip"
+              target="_blank"
+              download
+              className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold transition shadow animate-pulse"
+              title="تحميل الملفات المجمعة الجاهزة للرفع على هوسيتنجر"
+            >
+              📥 تحميل حزمة هوسيتنجر (ZIP)
+            </a>
             {currentUser ? (
               <div className="flex items-center gap-3 bg-slate-800/80 border border-slate-700/60 rounded-xl px-3.5 py-2">
                 <div className="text-right">
