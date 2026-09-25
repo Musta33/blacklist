@@ -48,6 +48,44 @@ interface BlacklistRecord {
   block_date: string;
 }
 
+class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { hasError: boolean; error: Error | null }> {
+  constructor(props: { children: React.ReactNode }) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
+    console.error("ErrorBoundary caught an error:", error, errorInfo);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center p-6 font-['Cairo',sans-serif]" dir="rtl">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-8 max-w-lg w-full text-center space-y-4 shadow-2xl">
+            <div className="w-16 h-16 bg-rose-500/10 border border-rose-500/20 text-rose-500 rounded-2xl flex items-center justify-center mx-auto text-2xl font-bold">⚠️</div>
+            <h1 className="text-xl font-black text-white">عذراً، حدث خطأ غير متوقع في واجهة النظام</h1>
+            <p className="text-xs text-slate-400 font-mono bg-slate-950 p-3 rounded-xl border border-slate-800 overflow-auto max-h-32 text-left" dir="ltr">
+              {this.state.error?.toString()}
+            </p>
+            <button
+              onClick={() => window.location.reload()}
+              className="w-full py-3 bg-rose-600 hover:bg-rose-500 text-white font-bold rounded-xl text-xs transition"
+            >
+              إعادة تحميل التطبيق وتحديث البيانات
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 export default function App() {
   const [activeTab, setActiveTab] = useState<'search' | 'add' | 'admin' | 'html_pages' | 'code' | 'mongo'>('search');
   const [currentUser, setCurrentUser] = useState<User | null>(null);
@@ -520,7 +558,8 @@ if __name__ == '__main__':
   const totalDebt = records.reduce((s, r) => s + (r.debt_amount || 0), 0);
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-['Cairo',sans-serif]">
+    <ErrorBoundary>
+      <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-['Cairo',sans-serif]">
       {/* Header */}
       <header className="border-b border-slate-800 bg-slate-900/90 backdrop-blur sticky top-0 z-40">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-20 flex items-center justify-between">
@@ -720,17 +759,17 @@ if __name__ == '__main__':
               ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   {records.map(r => (
-                    <div key={r.id} className="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-4 relative overflow-hidden">
+                    <div key={r?.id || Math.random()} className="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-4 relative overflow-hidden">
                       <div className="absolute top-0 right-0 w-2 h-full bg-rose-600"></div>
                       <div className="flex items-start justify-between">
                         <div>
                           <span className="text-xs font-bold text-rose-400 bg-rose-500/10 border border-rose-500/20 px-2.5 py-0.5 rounded-full inline-block mb-1">
                             مستأجر محظور
                           </span>
-                          <h3 className="text-xl font-black text-white">{r.tenant_name}</h3>
+                          <h3 className="text-xl font-black text-white">{r?.tenant_name || 'مستأجر غير معروف'}</h3>
                         </div>
                         <button
-                          onClick={() => handleDeleteRecord(r.id)}
+                          onClick={() => handleDeleteRecord(r?.id)}
                           className="p-2 rounded-lg text-slate-500 hover:text-rose-400 hover:bg-rose-500/10 transition"
                           title="تسوية وضع المستأجر وحذفه"
                         >
@@ -741,26 +780,26 @@ if __name__ == '__main__':
                       <div className="grid grid-cols-2 gap-3 text-xs bg-slate-950 p-3.5 rounded-xl border border-slate-800">
                         <div>
                           <span className="text-slate-500 block">الهوية الوطنية / الجواز:</span>
-                          <span className="font-mono text-amber-400 font-bold">{r.national_id}</span>
+                          <span className="font-mono text-amber-400 font-bold">{r?.national_id || 'غير متوفرة'}</span>
                         </div>
                         <div>
                           <span className="text-slate-500 block">رقم رخصة القيادة:</span>
-                          <span className="font-mono text-emerald-400 font-bold">{r.license_number || 'غير مسجل'}</span>
+                          <span className="font-mono text-emerald-400 font-bold">{r?.license_number || 'غير مسجل'}</span>
                         </div>
                         <div className="col-span-2">
                           <span className="text-slate-500 block">المبلغ المتعثر:</span>
-                          <span className="text-rose-400 font-extrabold text-sm">{r.debt_amount ? `${r.debt_amount.toLocaleString('ar-IQ')} د.ع` : 'لا توجد مالية'}</span>
+                          <span className="text-rose-400 font-extrabold text-sm">{r?.debt_amount ? `${Number(r.debt_amount).toLocaleString('ar-IQ')} د.ع` : 'لا توجد مالية'}</span>
                         </div>
                       </div>
 
                       <div className="p-3 bg-slate-950/60 border border-slate-800 rounded-xl text-xs">
                         <strong className="text-rose-400 block mb-0.5">سبب الحظر:</strong>
-                        <p className="text-slate-300">{r.reason}</p>
+                        <p className="text-slate-300">{r?.reason || 'بدون سبب محدد'}</p>
                       </div>
 
                       <div className="flex items-center justify-between text-[11px] text-slate-500 border-t border-slate-800 pt-3">
-                        <span>المُبلغ: {r.reported_by_office || 'مكتب تأجير سيارات'}</span>
-                        <span>{r.block_date}</span>
+                        <span>المُبلغ: {r?.reported_by_office || 'مكتب تأجير سيارات'}</span>
+                        <span>{r?.block_date || 'تاريخ غير معروف'}</span>
                       </div>
                     </div>
                   ))}
@@ -1224,5 +1263,6 @@ if __name__ == '__main__':
         </div>
       )}
     </div>
+    </ErrorBoundary>
   );
 }
