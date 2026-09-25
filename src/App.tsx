@@ -86,6 +86,11 @@ class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { has
   }
 }
 
+const API_BASE = (import.meta as any).env?.VITE_API_BASE_URL || '';
+const apiFetch = (endpoint: string, options?: RequestInit) => {
+  return fetch(`${API_BASE}${endpoint}`, options);
+};
+
 export default function App() {
   const [activeTab, setActiveTab] = useState<'search' | 'add' | 'admin' | 'html_pages' | 'code' | 'mongo'>('search');
   const [currentUser, setCurrentUser] = useState<User | null>(null);
@@ -281,7 +286,7 @@ if __name__ == '__main__':
   // Fetch Session
   const checkAuth = async () => {
     try {
-      const res = await fetch('/api/auth/me', {
+      const res = await apiFetch('/api/auth/me', {
         headers: token ? { Authorization: `Bearer ${token}` } : {}
       });
       const data = await res.json();
@@ -299,7 +304,7 @@ if __name__ == '__main__':
     setBlockedMsg('');
 
     try {
-      const res = await fetch(`/api/blacklist/search?q=${encodeURIComponent(query)}`, {
+      const res = await apiFetch(`/api/blacklist/search?q=${encodeURIComponent(query)}`, {
         headers: token ? { Authorization: `Bearer ${token}` } : {}
       });
 
@@ -324,7 +329,7 @@ if __name__ == '__main__':
   const fetchUsers = async () => {
     if (!currentUser || currentUser.role !== 'admin') return;
     try {
-      const res = await fetch('/api/admin/users', {
+      const res = await apiFetch('/api/admin/users', {
         headers: token ? { Authorization: `Bearer ${token}` } : {}
       });
       const data = await res.json();
@@ -341,7 +346,7 @@ if __name__ == '__main__':
     e.preventDefault();
     setAuthError('');
     try {
-      const res = await fetch('/api/auth/login', {
+      const res = await apiFetch('/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email: authEmail, password: authPassword })
@@ -365,7 +370,7 @@ if __name__ == '__main__':
     e.preventDefault();
     setAuthError('');
     try {
-      const res = await fetch('/api/auth/signup', {
+      const res = await apiFetch('/api/auth/signup', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -392,7 +397,7 @@ if __name__ == '__main__':
   // Quick Login Demo
   const loginAsAdmin = async () => {
     try {
-      const res = await fetch('/api/auth/login', {
+      const res = await apiFetch('/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email: 'admin@carrental.sa', password: 'admin123' })
@@ -409,7 +414,7 @@ if __name__ == '__main__':
 
   const loginAsApprovedOffice = async () => {
     try {
-      const res = await fetch('/api/auth/login', {
+      const res = await apiFetch('/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email: 'gold-star@carrental.sa', password: '123456' })
@@ -433,7 +438,7 @@ if __name__ == '__main__':
   // Approve User
   const handleApproveUser = async (userId: string) => {
     try {
-      const res = await fetch('/api/admin/approve', {
+      const res = await apiFetch('/api/admin/approve', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({ user_id: userId })
@@ -453,7 +458,7 @@ if __name__ == '__main__':
     setAddErrorMsg('');
 
     try {
-      const res = await fetch('/api/blacklist/add', {
+      const res = await apiFetch('/api/blacklist/add', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({
@@ -486,7 +491,7 @@ if __name__ == '__main__':
   const handleDeleteRecord = async (id: string) => {
     if (!confirm('هل أنت تأكد من تسوية الوضع وحذف المستأجر من القائمة؟')) return;
     try {
-      const res = await fetch('/api/blacklist/delete', {
+      const res = await apiFetch('/api/blacklist/delete', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({ record_id: id })
@@ -504,7 +509,7 @@ if __name__ == '__main__':
     setTestingMongo(true);
 
     try {
-      const res = await fetch('/api/mongo/connect', {
+      const res = await apiFetch('/api/mongo/connect', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ mongo_uri: mongoUri })
@@ -533,7 +538,7 @@ if __name__ == '__main__':
     setTestingLegacyMongo(true);
 
     try {
-      const res = await fetch('/api/mongo/connect_external', {
+      const res = await apiFetch('/api/mongo/connect_external', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ legacy_mongo_uri: legacyMongoUri })
