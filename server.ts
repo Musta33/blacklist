@@ -2,6 +2,7 @@ import express, { Request, Response, NextFunction } from 'express';
 import { createServer as createViteServer } from 'vite';
 import crypto from 'crypto';
 import path from 'path';
+import fs from 'fs';
 import { MongoClient } from 'mongodb';
 
 const app = express();
@@ -585,8 +586,11 @@ app.get('/waiting.html', (req, res) => res.sendFile(path.resolve('./templates/wa
 app.get('/dashboard.html', (req, res) => res.sendFile(path.resolve('./templates/dashboard.html')));
 
 async function startServer() {
-  if (process.env.NODE_ENV === 'production') {
-    app.use(express.static(path.resolve('./dist'), {
+  const distPath = path.resolve('./dist');
+  const hasDist = fs.existsSync(distPath);
+
+  if (process.env.NODE_ENV === 'production' || hasDist) {
+    app.use(express.static(distPath, {
       setHeaders: (res, filePath) => {
         if (filePath.endsWith('.js') || filePath.endsWith('.mjs')) {
           res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
@@ -597,7 +601,7 @@ async function startServer() {
     }));
     app.get('*', (req, res, next) => {
       if (req.path.startsWith('/api')) return next();
-      res.sendFile(path.resolve('./dist/index.html'));
+      res.sendFile(path.join(distPath, 'index.html'));
     });
   } else {
     const vite = await createViteServer({
