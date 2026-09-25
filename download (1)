@@ -1,0 +1,3 @@
+MONGO_URI="mongodb+srv://admin:mustafa2002@cluster0.wyofarq.mongodb.net/test?retryWrites=true&w=majority&appName=Cluster0"
+LEGACY_MONGO_URI="mongodb+srv://admin:mustafa2002@cluster0.wyofarq.mongodb.net/test?retryWrites=true&w=majority&appName=Cluster0"
+PORT=3000
