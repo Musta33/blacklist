@@ -373,6 +373,61 @@ def logout():
     session.clear()
     return jsonify({"success": True, "message": "تم تسجيل الخروج بنجاح."}), 200
 
+# تغيير كلمة المرور للمستخدم المسجل (/api/auth/change-password)
+@app.route('/api/auth/change-password', methods=['POST'])
+def change_password():
+    try:
+        data = request.get_json() or {}
+        user_id = session.get('user_id')
+        email = data.get('email', '').strip().lower()
+        current_password = data.get('current_password', '')
+        new_password = data.get('new_password', '')
+
+        if not new_password or len(new_password) < 4:
+            return jsonify({"success": False, "message": "كلمة المرور الجديدة يجب أن تكون 4 خانات على الأقل."}), 400
+
+        user = None
+        if user_id:
+            try: user = users_collection.find_one({"_id": ObjectId(user_id)})
+            except: pass
+        if not user and email:
+            user = users_collection.find_one({"email": email})
+
+        if not user:
+            return jsonify({"success": False, "message": "المستخدم غير مسجل."}), 404
+
+        if current_password and user.get('password') and not check_password_hash(user['password'], current_password):
+            return jsonify({"success": False, "message": "كلمة المرور الحالية غير صحيحة."}), 400
+
+        hashed = generate_password_hash(new_password)
+        users_collection.update_one({"_id": user['_id']}, {"$set": {"password": hashed, "status": "Pending", "updated_at": datetime.utcnow()}})
+
+        return jsonify({"success": True, "status": "Pending", "message": "⏳ تم تغيير كلمة المرور بنجاح! طلبك قيد المراجعة، يرجى انتظار الموافقة من الإدارة لتفعيل الحساب."}), 200
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 500
+
+# إعادة تعيين كلمة المرور (/api/auth/reset-password)
+@app.route('/api/auth/reset-password', methods=['POST'])
+def reset_password():
+    try:
+        data = request.get_json() or {}
+        email = data.get('email', '').strip().lower()
+        new_password = data.get('new_password', '')
+
+        if not email or not new_password or len(new_password) < 4:
+            return jsonify({"success": False, "message": "البريد الإلكتروني وكلمة المرور (4 خانات كحد أدنى) مطلوبان."}), 400
+
+        hashed = generate_password_hash(new_password)
+        res = users_collection.update_one(
+            {"email": email},
+            {"$set": {"password": hashed, "status": "Pending", "updated_at": datetime.utcnow()}},
+            upsert=True
+        )
+
+        return jsonify({"success": True, "status": "Pending", "message": "⏳ تم تغيير كلمة المرور بنجاح! يرجى انتظار الموافقة من الإدارة لتفعيل الحساب وتسجيل الدخول."}), 200
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 500
+
 # معلومات الجلسة الحالية (/api/auth/me)
 @app.route('/api/auth/me', methods=['GET'])
 def get_current_user():
@@ -399,8 +454,9 @@ def get_current_user():
     except Exception:
         return jsonify({"authenticated": False}), 200
 
-# موافقة الإدارة على الحسابات (/api/admin/approve)
+# موافقة الإدارة على الحسابات (/api/admin/approve & /api/admin/approve-user)
 @app.route('/api/admin/approve', methods=['POST'])
+@app.route('/api/admin/approve-user', methods=['POST'])
 @admin_required
 def approve_user():
     try:
@@ -410,10 +466,15 @@ def approve_user():
         if not target_user_id:
             return jsonify({"success": False, "message": "معرّف المكتب مطلوب."}), 400
 
+        query = {"$or": [{"email": target_user_id}]}
+        try: query["$or"].append({"_id": ObjectId(target_user_id)})
+        except: pass
+
         result = users_collection.update_one(
-            {"_id": ObjectId(target_user_id)},
+            query,
             {"$set": {
                 "status": "Approved",
+                "password_change_requested": False,
                 "approved_at": datetime.utcnow(),
                 "approved_by": session.get('user_id')
             }}
@@ -424,9 +485,155 @@ def approve_user():
 
         return jsonify({
             "success": True,
-            "message": "تمت الموافقة على مكتب التأجير وتفعيل حسابه بنجاح. يمكنه الآن تسجيل الدخول والاستعلام."
+            "message": "✅ تمت الموافقة على مكتب التأجير وتفعيل حسابه بنجاح."
         }), 200
 
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 500
+
+# اعتماد وتأكيد تغيير كلمة المرور من الإدارة (/api/admin/approve-password)
+@app.route('/api/admin/approve-password', methods=['POST'])
+@admin_required
+def approve_password_change():
+    try:
+        data = request.get_json() or {}
+        target_user_id = data.get('user_id')
+
+        if not target_user_id:
+            return jsonify({"success": False, "message": "معرّف المكتب مطلوب."}), 400
+
+        query = {"$or": [{"email": target_user_id}]}
+        try: query["$or"].append({"_id": ObjectId(target_user_id)})
+        except: pass
+
+        result = users_collection.update_one(
+            query,
+            {"$set": {
+                "status": "Approved",
+                "password_change_requested": False,
+                "approved_at": datetime.utcnow()
+            }}
+        )
+
+        return jsonify({
+            "success": True,
+            "message": "✅ تم اعتماد كلمة المرور وتفعيل حساب المكتب بنجاح."
+        }), 200
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 500
+
+# رفض طلب أو حساب مكتب (/api/admin/reject-user)
+@app.route('/api/admin/reject-user', methods=['POST'])
+@admin_required
+def reject_user():
+    try:
+        data = request.get_json() or {}
+        target_user_id = data.get('user_id')
+
+        query = {"$or": [{"email": target_user_id}]}
+        try: query["$or"].append({"_id": ObjectId(target_user_id)})
+        except: pass
+
+        users_collection.update_one(query, {"$set": {"status": "Rejected"}})
+        return jsonify({"success": True, "message": "❌ تم رفض طلب المكتب بنجاح."}), 200
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 500
+
+# تعيين كلمة مرور جديدة لمكتب من قبل الإدارة (/api/admin/reset-office-password)
+@app.route('/api/admin/reset-office-password', methods=['POST'])
+@admin_required
+def admin_reset_office_password():
+    try:
+        data = request.get_json() or {}
+        target_user_id = data.get('user_id')
+        new_password = data.get('new_password', '')
+
+        if not new_password or len(new_password) < 4:
+            return jsonify({"success": False, "message": "كلمة المرور يجب أن لا تقل عن 4 خانات."}), 400
+
+        query = {"$or": [{"email": target_user_id}]}
+        try: query["$or"].append({"_id": ObjectId(target_user_id)})
+        except: pass
+
+        hashed = generate_password_hash(new_password)
+        users_collection.update_one(
+            query, 
+            {"$set": {
+                "password": hashed, 
+                "status": "Approved", 
+                "password_change_requested": False, 
+                "updated_at": datetime.utcnow()
+            }}
+        )
+        return jsonify({"success": True, "message": "✅ تم تعيين وتفعيل كلمة المرور للمكتب بنجاح."}), 200
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 500
+
+# حذف حساب المستخدم لنفسه (/api/auth/delete-account)
+@app.route('/api/auth/delete-account', methods=['POST', 'DELETE'])
+def user_delete_own_account():
+    try:
+        user_id = session.get('user_id')
+        data = request.get_json() or {}
+        email = data.get('email', '').strip().lower()
+
+        if not user_id and not email:
+            return jsonify({"success": False, "message": "يرجى تسجيل الدخول أولاً."}), 401
+
+        query = {"$or": []}
+        if email: query["$or"].append({"email": email})
+        if user_id:
+            try: query["$or"].append({"_id": ObjectId(user_id)})
+            except: pass
+
+        if query["$or"]:
+            users_collection.delete_one(query)
+            session.clear()
+            return jsonify({"success": True, "message": "🗑️ تم حذف حسابك وبيانات مكتبك نهائياً بنجاح."}), 200
+        return jsonify({"success": False, "message": "المستخدم غير موجود."}), 404
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 500
+
+# حذف حساب مكتب من قبل الإدارة (/api/admin/delete-user)
+@app.route('/api/admin/delete-user', methods=['POST', 'DELETE'])
+@admin_required
+def admin_delete_user():
+    try:
+        data = request.get_json() or {}
+        target_user_id = data.get('user_id')
+        if not target_user_id:
+            return jsonify({"success": False, "message": "معرف المكتب مطلوب."}), 400
+
+        query = {"$or": [{"email": target_user_id}]}
+        try: query["$or"].append({"_id": ObjectId(target_user_id)})
+        except: pass
+
+        users_collection.delete_one(query)
+        return jsonify({"success": True, "message": "🗑️ تم حذف حساب المكتب نهائياً من النظام."}), 200
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 500
+
+# جلب جميع حسابات المكاتب والشركات (/api/admin/users)
+@app.route('/api/admin/users', methods=['GET'])
+@admin_required
+def admin_get_users():
+    try:
+        all_offices = list(users_collection.find({}, {"password": 0}))
+        result = []
+        for o in all_offices:
+            result.append({
+                "id": str(o['_id']),
+                "office_name": o.get('office_name', o.get('name', 'مكتب تأجير')),
+                "email": o.get('email', ''),
+                "phone": o.get('phone', ''),
+                "city": o.get('city', ''),
+                "role": o.get('role', 'user'),
+                "status": o.get('status', 'Approved'),
+                "password_change_requested": o.get('password_change_requested', False),
+                "password_change_time": str(o.get('password_change_time', '')),
+                "created_at": str(o.get('created_at', ''))
+            })
+        return jsonify({"success": True, "users": result}), 200
     except Exception as e:
         return jsonify({"success": False, "message": str(e)}), 500
 
@@ -560,6 +767,8 @@ def search_blacklist():
         # 1. البحث في القواعد الحالية
         cursor1 = list(blacklist_collection.find(filter_query))
         cursor2 = list(blacklist_sync_collection.find(filter_query)) if blacklist_sync_collection else []
+        cursor_blocklists = list(db.blocklists.find(ext_filter_query)) if 'db' in globals() and db is not None else []
+        cursor_renters = list(db.blocklisted_renters.find(ext_filter_query)) if 'db' in globals() and db is not None else []
 
         # 2. البحث في القاعدة الخارجية القديمة إن كانت متصلة مع Schema Mapping
         cursor3 = []
@@ -573,39 +782,56 @@ def search_blacklist():
         
         def process_docs(docs, source_label):
             for doc in docs:
-                t_name = doc.get('tenant_name') or doc.get('name') or doc.get('fullName') or 'مستأجر محظور'
-                nat_id = doc.get('national_id', '')
-                lic_num = doc.get('license_number', '')
-                phone_num = doc.get('phone') or doc.get('phoneNumber') or doc.get('mobile') or ''
-                block_rsn = doc.get('reason') or doc.get('blockReason') or doc.get('block_reason') or 'حظر من المنظومة'
+                t_name = str(doc.get('fullName') or doc.get('name') or doc.get('tenant_name') or doc.get('renterName') or 'مستأجر محظور').strip()
+                nat_id = str(doc.get('nationalId') or doc.get('idNumber') or doc.get('national_id') or doc.get('nin') or '').strip()
+                lic_num = str(doc.get('license_number') or doc.get('licenseNumber') or doc.get('idType') or '').strip()
+                phone_num = str(doc.get('phone') or doc.get('phoneNumber') or doc.get('mobile') or doc.get('renterPhone') or '').strip()
+                block_rsn = str(doc.get('reason') or doc.get('blockReason') or doc.get('block_reason') or doc.get('aiRiskSummary') or doc.get('legalReportText') or doc.get('notes') or 'حظر من المنظومة').strip()
+                car_mdl = doc.get('car_model') or doc.get('carModel') or ''
+                debt_amt = doc.get('totalDebtAmount') or doc.get('debt_amount') or doc.get('debtAmount') or 0
+                block_dt = str(doc.get('block_date') or doc.get('reportedAt') or doc.get('createdAt') or '').split('T')[0]
+                rep_office = doc.get('reportingBranch') or doc.get('addedBy') or doc.get('companyName') or doc.get('reported_by_office') or 'مكتب تأجير سيارات'
+                doc_status = 'Pending' if doc.get('status') == 'Pending' or doc.get('banStatus') == 'PENDING' else 'Approved'
 
                 doc_id = str(doc.get('_id', '')) or str(doc.get('id', ''))
-                key = doc_id
+                key = doc_id if doc_id else f"{nat_id}_{lic_num}_{t_name}"
+                
                 if key not in merged_map:
                     merged_map[key] = {
                         "id": doc_id,
                         "tenant_name": t_name,
-                        "national_id": nat_id,
-                        "license_number": lic_num,
+                        "national_id": nat_id if nat_id else "غير متوفرة",
+                        "license_number": lic_num if lic_num else "غير مسجل",
                         "phone": phone_num,
                         "reason": block_rsn,
                         "block_reason": block_rsn,
-                        "car_model": doc.get('car_model', ''),
-                        "debt_amount": doc.get('debt_amount', 0),
-                        "block_date": doc.get('block_date', ''),
-                        "reported_by_office": doc.get('reported_by', {}).get('office_name', 'مكتب تأجير سيارات') if isinstance(doc.get('reported_by'), dict) else doc.get('reported_by_office', 'مكتب تأجير سيارات'),
+                        "car_model": car_mdl,
+                        "debt_amount": float(debt_amt) if isinstance(debt_amt, (int, float)) else 0,
+                        "block_date": block_dt if block_dt else datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+                        "reported_by_office": rep_office,
+                        "status": doc_status,
                         "synced": True,
                         "sources": [source_label]
                     }
                 else:
                     if source_label not in merged_map[key]["sources"]:
                         merged_map[key]["sources"].append(source_label)
+                    if doc_status == 'Approved':
+                        merged_map[key]["status"] = 'Approved'
 
+        process_docs(cursor_blocklists, "قاعدة البيانات MongoDB (blocklists)")
+        process_docs(cursor_renters, "قاعدة البيانات MongoDB (blocklisted_renters)")
         process_docs(cursor1, "قاعدة البيانات الحالية (car_blacklist)")
         process_docs(cursor2, "قاعدة البيانات الحالية (car_blacklist_sync)")
         process_docs(cursor3, "قاعدة البيانات القديمة (External Legacy DB)")
 
         results = list(merged_map.values())
+        
+        # تصفية الحسابات العادية لإظهار المعتمد فقط أو ما أضافه المكتب
+        current_user = getattr(request, 'current_user', {})
+        if current_user and current_user.get('role') != 'admin':
+            office_n = current_user.get('office_name', '')
+            results = [r for r in results if r.get('status') == 'Approved' or r.get('reported_by_office') == office_n]
 
         return jsonify({
             "success": True,
