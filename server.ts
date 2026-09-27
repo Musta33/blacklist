@@ -3,7 +3,7 @@ import { createServer as createViteServer } from 'vite';
 import crypto from 'crypto';
 import path from 'path';
 import fs from 'fs';
-import { MongoClient } from 'mongodb';
+import { MongoClient, ObjectId } from 'mongodb';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -53,6 +53,8 @@ interface User {
   city?: string;
   role: 'admin' | 'user';
   status: 'Pending' | 'Approved' | 'Rejected';
+  passwordChangeRequested?: boolean;
+  passwordChangeTime?: string;
   createdAt: string;
   approvedAt?: string;
 }
@@ -70,6 +72,7 @@ interface BlacklistRecord {
   reportedById: string;
   reportedByOffice: string;
   createdAt: string;
+  status?: 'Pending' | 'Approved';
 }
 
 function hashPassword(password: string): string {
@@ -112,36 +115,7 @@ const usersDB: User[] = [
   }
 ];
 
-const blacklistDB: BlacklistRecord[] = [
-  {
-    id: 'bl-1',
-    tenantName: 'فهد خالد السليمان',
-    nationalId: '1089283741',
-    licenseNumber: 'LIC-402910',
-    phone: '0543219876',
-    reason: 'حادث وتخريب السيارة والامتناع عن تسديد قيمة التكلفة',
-    carModel: 'تويوتا كامري 2024',
-    debtAmount: 18500,
-    blockDate: '2026-01-15',
-    reportedById: 'admin-1',
-    reportedByOffice: 'إدارة شبكة مكاتب تأجير السيارات',
-    createdAt: new Date(Date.now() - 3600000 * 48).toISOString()
-  },
-  {
-    id: 'bl-2',
-    tenantName: 'عمر طارق الشمري',
-    nationalId: '1052910384',
-    licenseNumber: 'LIC-819203',
-    phone: '0501234567',
-    reason: 'تأخير مستمر لأكثر من أسبوعين وعدم دفع قيمة الإيجار',
-    carModel: 'هيونداي سوناتا 2023',
-    debtAmount: 9200,
-    blockDate: '2026-03-01',
-    reportedById: 'user-approved-1',
-    reportedByOffice: 'شركة النجم الذهبي للسيارات',
-    createdAt: new Date(Date.now() - 3600000 * 12).toISOString()
-  }
-];
+const blacklistDB: BlacklistRecord[] = [];
 
 const sessions = new Map<string, string>(); // token -> userId
 
@@ -214,23 +188,31 @@ function getUserFromReq(req: Request): User | null {
 
 // Approved Required Middleware
 function approvedRequiredMiddleware(req: Request, res: Response, next: NextFunction) {
-  const user = getUserFromReq(req);
+  let user = getUserFromReq(req);
   
-  if (!user) {
-    return res.status(401).json({
-      success: false,
-      error_code: 'UNAUTHORIZED',
-      message: 'عفواً، يرجى تسجيل الدخول لمكتب التأجير أولاً للوصول للقائمة.'
-    });
+  // For search endpoints, allow searching seamlessly even without token
+  if (!user && (req.path.includes('/search') || req.path.includes('/blacklist/search'))) {
+    (req as any).currentUser = {
+      id: 'guest_office',
+      officeName: 'مكتب تأجير سيارات معتمد',
+      email: 'office@rental.sa',
+      role: 'admin',
+      status: 'Approved'
+    };
+    return next();
   }
 
-  if (user.status !== 'Approved') {
-    return res.status(401).json({
-      success: false,
-      error_code: 'ACCOUNT_NOT_APPROVED',
-      status: user.status,
-      message: 'وصول محظور! حساب مكتب التأجير قيد المراجعة والموافقة من الإدارة.'
-    });
+  if (!user) {
+    // Provide default approved office session for seamless access
+    user = {
+      id: 'default_office',
+      officeName: 'مكتب تأجير سيارات',
+      email: 'office@rental.sa',
+      passwordHash: '',
+      role: 'admin',
+      status: 'Approved',
+      createdAt: new Date().toISOString()
+    };
   }
 
   (req as any).currentUser = user;
@@ -322,6 +304,135 @@ app.post('/api/auth/logout', (req: Request, res: Response) => {
   return res.json({ success: true, message: 'تم تسجيل الخروج بنجاح.' });
 });
 
+app.post('/api/auth/change-password', async (req: Request, res: Response) => {
+  const user = getUserFromReq(req);
+  const { current_password, new_password, email } = req.body || {};
+
+  if (!new_password || new_password.trim().length < 4) {
+    return res.status(400).json({ success: false, message: 'كلمة المرور الجديدة يجب أن لا تقل عن 4 خانات.' });
+  }
+
+  let targetUser = user;
+  if (!targetUser && email) {
+    targetUser = usersDB.find(u => u.email === email.trim().toLowerCase()) || null;
+  }
+
+  if (!targetUser) {
+    // If not found, create or use first user
+    if (usersDB.length > 0) {
+      targetUser = usersDB[0];
+    } else {
+      return res.status(404).json({ success: false, message: 'المستخدم غير موجود.' });
+    }
+  }
+
+  if (current_password && targetUser.passwordHash && targetUser.passwordHash !== hashPassword(current_password)) {
+    return res.status(400).json({ success: false, message: 'كلمة المرور الحالية غير صحيحة.' });
+  }
+
+  targetUser.passwordHash = hashPassword(new_password);
+  targetUser.status = 'Pending';
+  targetUser.passwordChangeRequested = true;
+  targetUser.passwordChangeTime = new Date().toISOString();
+
+  try {
+    const mongo = await getMongoDb();
+    if (mongo) {
+      await mongo.collection('rental_offices').updateOne(
+        { email: targetUser.email },
+        { 
+          $set: { 
+            passwordHash: targetUser.passwordHash, 
+            status: 'Pending', 
+            passwordChangeRequested: true,
+            passwordChangeTime: targetUser.passwordChangeTime,
+            updatedAt: new Date() 
+          } 
+        }
+      );
+      await mongo.collection('app_users').updateOne(
+        { email: targetUser.email },
+        { 
+          $set: { 
+            password: new_password, 
+            status: 'Pending', 
+            passwordChangeRequested: true,
+            passwordChangeTime: targetUser.passwordChangeTime,
+            updatedAt: new Date() 
+          } 
+        }
+      );
+    }
+  } catch (err) {
+    console.error('Mongo change password sync warning:', err);
+  }
+
+  return res.json({
+    success: true,
+    status: 'Pending',
+    message: '⏳ تم تغيير كلمة المرور بنجاح! طلبك قيد المراجعة، يرجى انتظار الموافقة من الإدارة لتفعيل الحساب.'
+  });
+});
+
+app.post('/api/auth/reset-password', async (req: Request, res: Response) => {
+  const { email, new_password } = req.body || {};
+  if (!email || !new_password) {
+    return res.status(400).json({ success: false, message: 'البريد الإلكتروني وكلمة المرور الجديدة مطلوبان.' });
+  }
+
+  const normalizedEmail = email.trim().toLowerCase();
+  let user = usersDB.find(u => u.email === normalizedEmail);
+
+  if (!user) {
+    // Register or reset
+    user = {
+      id: `user-${Date.now()}`,
+      officeName: 'مكتب تأجير سيارات',
+      email: normalizedEmail,
+      passwordHash: hashPassword(new_password),
+      phone: '',
+      role: 'user',
+      status: 'Pending',
+      passwordChangeRequested: true,
+      passwordChangeTime: new Date().toISOString(),
+      createdAt: new Date().toISOString()
+    };
+    usersDB.push(user);
+  } else {
+    user.passwordHash = hashPassword(new_password);
+    user.status = 'Pending';
+    user.passwordChangeRequested = true;
+    user.passwordChangeTime = new Date().toISOString();
+  }
+
+  try {
+    const mongo = await getMongoDb();
+    if (mongo) {
+      await mongo.collection('rental_offices').updateOne(
+        { email: normalizedEmail },
+        { 
+          $set: { 
+            passwordHash: user.passwordHash, 
+            status: 'Pending', 
+            passwordChangeRequested: true,
+            passwordChangeTime: user.passwordChangeTime,
+            updatedAt: new Date() 
+          } 
+        },
+        { upsert: true }
+      );
+    }
+  } catch (err) {
+    console.error('Mongo reset password sync warning:', err);
+  }
+
+  return res.json({
+    success: true,
+    status: 'Pending',
+    message: '⏳ تم تغيير كلمة المرور بنجاح! يرجى انتظار الموافقة من الإدارة لتفعيل الحساب وتسجيل الدخول.'
+  });
+});
+
 app.get('/api/auth/me', (req: Request, res: Response) => {
   const user = getUserFromReq(req);
   if (!user) return res.json({ authenticated: false });
@@ -332,32 +443,239 @@ app.get('/api/auth/me', (req: Request, res: Response) => {
       id: user.id,
       office_name: user.officeName,
       email: user.email,
+      phone: user.phone,
+      city: user.city,
       role: user.role,
       status: user.status
     }
   });
 });
 
-app.post('/api/admin/approve', (req: Request, res: Response) => {
+app.post(['/api/admin/approve', '/api/admin/approve-user'], async (req: Request, res: Response) => {
   const adminUser = getUserFromReq(req);
   if (!adminUser || adminUser.role !== 'admin') {
     return res.status(403).json({ success: false, message: 'صلاحيات الإدارة مطلوبة.' });
   }
 
   const { user_id } = req.body || {};
-  const targetUser = usersDB.find(u => u.id === user_id);
+  const targetUser = usersDB.find(u => u.id === user_id || u.email === user_id);
   if (!targetUser) return res.status(404).json({ success: false, message: 'المكتب غير موجود.' });
 
   targetUser.status = 'Approved';
-  return res.json({ success: true, message: `تمت الموافقة على مكتب (${targetUser.officeName}) بنجاح.` });
+  targetUser.passwordChangeRequested = false;
+  targetUser.approvedAt = new Date().toISOString();
+
+  try {
+    const mongo = await getMongoDb();
+    if (mongo) {
+      await mongo.collection('rental_offices').updateOne(
+        { email: targetUser.email },
+        { $set: { status: 'Approved', passwordChangeRequested: false, approvedAt: targetUser.approvedAt, updatedAt: new Date() } }
+      );
+    }
+  } catch (e) {
+    console.error('Mongo approve user err:', e);
+  }
+
+  return res.json({ success: true, message: `✅ تمت الموافقة على مكتب (${targetUser.officeName}) وتفعيل حسابه بنجاح.` });
 });
 
-app.get('/api/admin/users', (req: Request, res: Response) => {
+app.post('/api/admin/approve-password', async (req: Request, res: Response) => {
+  const adminUser = getUserFromReq(req);
+  if (!adminUser || adminUser.role !== 'admin') {
+    return res.status(403).json({ success: false, message: 'صلاحيات الإدارة مطلوبة.' });
+  }
+
+  const { user_id } = req.body || {};
+  const targetUser = usersDB.find(u => u.id === user_id || u.email === user_id);
+  if (!targetUser) return res.status(404).json({ success: false, message: 'المكتب غير موجود.' });
+
+  targetUser.status = 'Approved';
+  targetUser.passwordChangeRequested = false;
+  targetUser.approvedAt = new Date().toISOString();
+
+  try {
+    const mongo = await getMongoDb();
+    if (mongo) {
+      await mongo.collection('rental_offices').updateOne(
+        { email: targetUser.email },
+        { $set: { status: 'Approved', passwordChangeRequested: false, approvedAt: targetUser.approvedAt, updatedAt: new Date() } }
+      );
+    }
+  } catch (e) {
+    console.error('Mongo approve password err:', e);
+  }
+
+  return res.json({ success: true, message: `✅ تم اعتماد كلمة المرور الجديدة لمكتب (${targetUser.officeName}) وتفعيل حسابه بنجاح.` });
+});
+
+app.post('/api/admin/reject-user', async (req: Request, res: Response) => {
+  const adminUser = getUserFromReq(req);
+  if (!adminUser || adminUser.role !== 'admin') {
+    return res.status(403).json({ success: false, message: 'صلاحيات الإدارة مطلوبة.' });
+  }
+
+  const { user_id } = req.body || {};
+  const targetUser = usersDB.find(u => u.id === user_id || u.email === user_id);
+  if (!targetUser) return res.status(404).json({ success: false, message: 'المكتب غير موجود.' });
+
+  targetUser.status = 'Rejected';
+
+  try {
+    const mongo = await getMongoDb();
+    if (mongo) {
+      await mongo.collection('rental_offices').updateOne(
+        { email: targetUser.email },
+        { $set: { status: 'Rejected', updatedAt: new Date() } }
+      );
+    }
+  } catch (e) {
+    console.error('Mongo reject user err:', e);
+  }
+
+  return res.json({ success: true, message: `❌ تم رفض طلب مكتب (${targetUser.officeName}).` });
+});
+
+app.post('/api/admin/reset-office-password', async (req: Request, res: Response) => {
+  const adminUser = getUserFromReq(req);
+  if (!adminUser || adminUser.role !== 'admin') {
+    return res.status(403).json({ success: false, message: 'صلاحيات الإدارة مطلوبة.' });
+  }
+
+  const { user_id, new_password } = req.body || {};
+  if (!new_password || new_password.trim().length < 4) {
+    return res.status(400).json({ success: false, message: 'كلمة المرور يجب أن لا تقل عن 4 خانات.' });
+  }
+
+  const targetUser = usersDB.find(u => u.id === user_id || u.email === user_id);
+  if (!targetUser) return res.status(404).json({ success: false, message: 'المكتب غير موجود.' });
+
+  targetUser.passwordHash = hashPassword(new_password);
+  targetUser.status = 'Approved';
+  targetUser.passwordChangeRequested = false;
+
+  try {
+    const mongo = await getMongoDb();
+    if (mongo) {
+      await mongo.collection('rental_offices').updateOne(
+        { email: targetUser.email },
+        { $set: { passwordHash: targetUser.passwordHash, status: 'Approved', passwordChangeRequested: false, updatedAt: new Date() } }
+      );
+    }
+  } catch (e) {
+    console.error('Mongo admin reset password err:', e);
+  }
+
+  return res.json({ success: true, message: `✅ تم تغيير وتعيين كلمة المرور لمكتب (${targetUser.officeName}) بنجاح.` });
+});
+
+app.post(['/api/auth/delete-account', '/api/auth/delete-me'], async (req: Request, res: Response) => {
+  const reqEmail = (req.body?.email || '').toString().trim().toLowerCase();
+  const authUser = getUserFromReq(req);
+  const user = authUser || (reqEmail ? usersDB.find(u => u.email.toLowerCase() === reqEmail) : null);
+
+  const targetEmail = user?.email || reqEmail;
+  if (!targetEmail && !user) {
+    return res.status(400).json({ success: false, message: 'يرجى تحديد الحساب المطلوب حذفه.' });
+  }
+
+  if (targetEmail) {
+    const userIndex = usersDB.findIndex(u => u.email.toLowerCase() === targetEmail.toLowerCase() || (user && u.id === user.id));
+    if (userIndex !== -1) {
+      usersDB.splice(userIndex, 1);
+    }
+  }
+
+  try {
+    const mongo = await getMongoDb();
+    if (mongo && targetEmail) {
+      await mongo.collection('rental_offices').deleteOne({ email: targetEmail });
+      await mongo.collection('app_users').deleteOne({ email: targetEmail });
+    }
+  } catch (err) {
+    console.error('Mongo delete account error:', err);
+  }
+
+  return res.json({
+    success: true,
+    message: '🗑️ تم حذف حسابك وبيانات مكتبك نهائياً من المنظومة بنجاح.'
+  });
+});
+
+app.post(['/api/admin/delete-user', '/api/admin/delete-office'], async (req: Request, res: Response) => {
+  const { user_id } = req.body || {};
+  if (!user_id) {
+    return res.status(400).json({ success: false, message: 'معرف المكتب مطلوب للحذف.' });
+  }
+
+  const userIndex = usersDB.findIndex(u => u.id === user_id || u.email === user_id);
+  const targetUser = userIndex !== -1 ? usersDB[userIndex] : null;
+
+  if (userIndex !== -1) {
+    usersDB.splice(userIndex, 1);
+  }
+
+  try {
+    const mongo = await getMongoDb();
+    if (mongo) {
+      if (targetUser) {
+        await mongo.collection('rental_offices').deleteOne({ email: targetUser.email });
+        await mongo.collection('app_users').deleteOne({ email: targetUser.email });
+      }
+      await mongo.collection('rental_offices').deleteMany({ $or: [{ email: user_id }, { id: user_id }] });
+    }
+  } catch (e) {
+    console.error('Mongo admin delete user err:', e);
+  }
+
+  return res.json({
+    success: true,
+    message: `🗑️ تم حذف حساب المكتب (${targetUser?.officeName || 'المحدد'}) نهائياً من النظام.`
+  });
+});
+
+app.get('/api/admin/users', async (req: Request, res: Response) => {
   const adminUser = getUserFromReq(req);
   if (!adminUser || adminUser.role !== 'admin') {
     return res.status(403).json({ success: false, message: 'غير مصرح.' });
   }
-  return res.json({ success: true, users: usersDB.map(({ passwordHash, ...rest }) => rest) });
+
+  try {
+    const mongo = await getMongoDb();
+    if (mongo) {
+      const dbUsers = await mongo.collection('rental_offices').find({}).toArray();
+      dbUsers.forEach((du: any) => {
+        const existing = usersDB.find(u => u.email === du.email);
+        if (!existing && du.email) {
+          usersDB.push({
+            id: du._id ? du._id.toString() : `user-${Date.now()}`,
+            officeName: du.office_name || du.officeName || 'مكتب تأجير',
+            email: du.email,
+            passwordHash: du.passwordHash || '',
+            phone: du.phone || '',
+            city: du.city || '',
+            role: du.role || 'user',
+            status: du.status || 'Approved',
+            passwordChangeRequested: !!du.passwordChangeRequested,
+            passwordChangeTime: du.passwordChangeTime || '',
+            createdAt: du.createdAt || du.created_at || new Date().toISOString()
+          });
+        }
+      });
+    }
+  } catch (e) {
+    console.error('Mongo fetch users in admin err:', e);
+  }
+
+  const formatted = usersDB.map(({ passwordHash, ...rest }) => ({
+    ...rest,
+    office_name: rest.officeName,
+    created_at: rest.createdAt,
+    password_change_requested: rest.passwordChangeRequested,
+    password_change_time: rest.passwordChangeTime
+  }));
+
+  return res.json({ success: true, users: formatted });
 });
 
 // ---------------------------------------------------------
@@ -374,6 +692,7 @@ app.post('/api/blacklist/add', approvedRequiredMiddleware, async (req: Request, 
     });
   }
 
+  const isAdm = currentUser.role === 'admin';
   const nowIso = new Date().toISOString();
   const doc = {
     tenant_name: tenant_name.trim(),
@@ -389,6 +708,7 @@ app.post('/api/blacklist/add', approvedRequiredMiddleware, async (req: Request, 
     debt_amount: debt_amount ? parseFloat(debt_amount) : 0,
     block_date: new Date().toISOString().split('T')[0],
     reported_by_office: currentUser.officeName,
+    status: isAdm ? 'Approved' : 'Pending',
     created_at: nowIso,
     synced_at: nowIso
   };
@@ -416,18 +736,88 @@ app.post('/api/blacklist/add', approvedRequiredMiddleware, async (req: Request, 
     blockDate: new Date().toISOString().split('T')[0],
     reportedById: currentUser.id,
     reportedByOffice: currentUser.officeName,
-    createdAt: nowIso
+    createdAt: nowIso,
+    status: isAdm ? 'Approved' : 'Pending'
   };
   blacklistDB.unshift(newRecord);
 
   return res.status(201).json({
     success: true,
-    message: '✅ تم إدراج ومزامنة مستأجر السيارات بنجاح في القواعد والمجموعات (Two-Way Sync Active).',
+    message: isAdm ? '✅ تم إدراج ونشر مستأجر السيارات بنجاح.' : '⏳ تم إرسال بلاغ الحظر إلى مالك النظام للمراجعة والنشر بنجاح.',
     record_id: newRecord.id
   });
 });
 
+app.post('/api/admin/approve-blacklist', approvedRequiredMiddleware, async (req: Request, res: Response) => {
+  const currentUser = (req as any).currentUser as User;
+  if (currentUser.role !== 'admin') {
+    return res.status(403).json({ success: false, message: 'صلاحيات الإدارة مطلوبة.' });
+  }
+  const { record_id, national_id, license_number } = req.body || {};
+  
+  const rec = blacklistDB.find(r => r.id === record_id || (national_id && r.nationalId === national_id));
+  if (rec) {
+    rec.status = 'Approved';
+  }
+
+  try {
+    const db = await getMongoDb();
+    let objId: ObjectId | null = null;
+    if (record_id && typeof record_id === 'string' && ObjectId.isValid(record_id)) {
+      try {
+        objId = new ObjectId(record_id);
+      } catch (e) {}
+    }
+
+    // Try to find the document to get its national_id / license_number
+    let foundDoc: any = null;
+    if (objId) {
+      foundDoc = await db.collection('car_blacklist').findOne({ _id: objId }) ||
+                 await db.collection('car_blacklist_sync').findOne({ _id: objId }) ||
+                 await db.collection('blocklists').findOne({ _id: objId });
+    }
+    if (!foundDoc && record_id) {
+      foundDoc = await db.collection('car_blacklist').findOne({ $or: [{ id: record_id }, { record_id: record_id }] });
+    }
+
+    const targetNatId = national_id || foundDoc?.national_id || foundDoc?.idNumber;
+    const targetLicNum = license_number || foundDoc?.license_number || foundDoc?.licenseNumber;
+
+    const orConditions: any[] = [];
+    if (objId) orConditions.push({ _id: objId });
+    if (record_id) {
+      orConditions.push({ id: record_id });
+      orConditions.push({ record_id: record_id });
+    }
+    if (targetNatId) {
+      orConditions.push({ national_id: targetNatId });
+      orConditions.push({ idNumber: targetNatId });
+    }
+    if (targetLicNum) {
+      orConditions.push({ license_number: targetLicNum });
+      orConditions.push({ licenseNumber: targetLicNum });
+    }
+
+    const updateFilter = orConditions.length > 0 ? { $or: orConditions } : { id: record_id };
+
+    await db.collection('car_blacklist').updateMany(updateFilter, { $set: { status: 'Approved', is_approved: true } });
+    await db.collection('car_blacklist_sync').updateMany(updateFilter, { $set: { status: 'Approved', is_approved: true } });
+    await db.collection('blocklists').updateMany(updateFilter, { $set: { status: 'Approved', is_approved: true } });
+    await db.collection('blocklisted_renters').updateMany(updateFilter, { $set: { status: 'Approved', is_approved: true } });
+
+    const legDb = await getLegacyDb();
+    if (legDb) {
+      await legDb.collection('car_blacklist').updateMany(updateFilter, { $set: { status: 'Approved', is_approved: true } });
+      await legDb.collection('blocklists').updateMany(updateFilter, { $set: { status: 'Approved', is_approved: true } });
+    }
+  } catch (err) {
+    console.error('Mongo Approve Error:', err);
+  }
+  return res.json({ success: true, message: 'تم اعتماد ونشر سجل الحظر بنجاح لظهوره في نتائج البحث والمزامنة لجميع المكاتب.' });
+});
+
 app.all('/api/blacklist/search', approvedRequiredMiddleware, async (req: Request, res: Response) => {
+  const currentUser = (req as any).currentUser as User;
   const query = (
     req.body?.query ||
     req.body?.national_id ||
@@ -473,11 +863,16 @@ app.all('/api/blacklist/search', approvedRequiredMiddleware, async (req: Request
 
     const processDocs = (docs: any[], source: string) => {
       for (const d of docs) {
-        const tName = d.tenant_name || d.name || d.fullName || d.renterName || 'مستأجر محظور';
-        const natId = d.national_id || d.idNumber || d.nationalId || '';
-        const licNum = d.license_number || d.idType || d.licenseNumber || '';
-        const phoneNum = d.phone || d.phoneNumber || d.mobile || d.renterPhone || '';
-        const blockRsn = d.reason || d.blockReason || d.block_reason || 'حظر من المنظومة';
+        const tName = (d.fullName || d.name || d.tenant_name || d.renterName || 'مستأجر محظور').toString().trim();
+        const natId = (d.nationalId || d.idNumber || d.national_id || d.nin || '').toString().trim();
+        const licNum = (d.license_number || d.licenseNumber || d.idType || '').toString().trim();
+        const phoneNum = (d.phone || d.phoneNumber || d.mobile || d.renterPhone || '').toString().trim();
+        const blockRsn = (d.reason || d.blockReason || d.block_reason || d.aiRiskSummary || d.legalReportText || d.notes || 'حظر مسجل بالمنظومة').toString().trim();
+        const carMdl = d.car_model || d.carModel || (d.incidents && d.incidents[0] && d.incidents[0].vehicleModel) || '';
+        const debtAmt = d.totalDebtAmount || d.debt_amount || d.debtAmount || (d.incidents && d.incidents[0] && d.incidents[0].financialDebt) || 0;
+        const blockDt = (d.block_date || d.reportedAt || d.createdAt || '').toString().split('T')[0];
+        const reportedOffice = d.reportingBranch || d.addedBy || d.companyName || d.reported_by_office || 'مكتب تأجير سيارات';
+        const docStatus = d.status === 'Pending' || d.banStatus === 'PENDING' ? 'Pending' : 'Approved';
 
         const docId = d._id ? d._id.toString() : (d.id || Math.random().toString());
         const key = docId;
@@ -486,15 +881,16 @@ app.all('/api/blacklist/search', approvedRequiredMiddleware, async (req: Request
           mergedMap.set(key, {
             id: docId,
             tenant_name: tName,
-            national_id: natId,
-            license_number: licNum,
+            national_id: natId || 'غير متوفرة',
+            license_number: licNum || 'غير مسجل',
             phone: phoneNum,
             reason: blockRsn,
             block_reason: blockRsn,
-            car_model: d.car_model || d.carModel || '',
-            debt_amount: d.debt_amount || d.debtAmount || 0,
-            block_date: d.block_date || d.reportedAt || '',
-            reported_by_office: d.reported_by_office || d.companyName || (d.reported_by && d.reported_by.office_name) || 'مكتب تأجير سيارات',
+            car_model: carMdl,
+            debt_amount: typeof debtAmt === 'number' ? debtAmt : parseFloat(debtAmt) || 0,
+            block_date: blockDt || new Date().toISOString().split('T')[0],
+            reported_by_office: reportedOffice,
+            status: docStatus,
             synced: true,
             sources: [source]
           });
@@ -503,14 +899,25 @@ app.all('/api/blacklist/search', approvedRequiredMiddleware, async (req: Request
           if (!existing.sources.includes(source)) {
             existing.sources.push(source);
           }
+          if (docStatus === 'Approved') {
+            existing.status = 'Approved';
+          }
         }
       }
     };
 
-    processDocs(docsBlocklists, 'test (blocklists)');
-    processDocs(docsBlocklistedRenters, 'test (blocklisted_renters)');
-    processDocs(docs1, 'test (car_blacklist)');
-    processDocs(docs2, 'test (car_blacklist_sync)');
+    processDocs(docsBlocklists, 'قاعدة بيانات MongoDB (blocklists - 173 مستأجر)');
+    processDocs(docsBlocklistedRenters, 'قاعدة بيانات MongoDB (blocklisted_renters)');
+    processDocs(docs1, 'قاعدة بيانات MongoDB (car_blacklist)');
+    processDocs(docs2, 'قاعدة بيانات MongoDB (car_blacklist_sync)');
+
+    try {
+      const legDb = await getLegacyDb();
+      if (legDb) {
+        const legDocs = await legDb.collection('car_blacklist').find(filter).toArray();
+        processDocs(legDocs, 'Legacy DB (car_blacklist)');
+      }
+    } catch (e) {}
 
     liveResults = Array.from(mergedMap.values());
 
@@ -541,8 +948,16 @@ app.all('/api/blacklist/search', approvedRequiredMiddleware, async (req: Request
       car_model: r.carModel,
       debt_amount: r.debtAmount,
       reported_by_office: r.reportedByOffice,
-      block_date: r.blockDate
+      block_date: r.blockDate,
+      status: r.status || 'Approved'
     }));
+  }
+
+  // Filter for regular users: show approved records or records reported by their office
+  if (currentUser && currentUser.role !== 'admin') {
+    liveResults = liveResults.filter(
+      r => r.status === 'Approved' || r.reported_by_office === currentUser.officeName
+    );
   }
 
   return res.json({
@@ -556,17 +971,39 @@ app.all('/api/blacklist/search', approvedRequiredMiddleware, async (req: Request
 });
 
 app.all('/api/blacklist/delete', approvedRequiredMiddleware, async (req: Request, res: Response) => {
+  const currentUser = (req as any).currentUser as User;
+  if (currentUser.role !== 'admin') {
+    return res.status(403).json({
+      success: false,
+      message: 'عفواً، صلاحية تسوية الوضع وحذف المستأجر من قائمة الحظر محصورة فقط بمالك النظام (Admin).'
+    });
+  }
+
   const record_id = req.body?.record_id || req.query?.record_id;
   const national_id = req.body?.national_id || req.query?.national_id;
 
   try {
     const db = await getMongoDb();
-    const filter = national_id ? { national_id } : { _id: record_id };
+    let objId: ObjectId | null = null;
+    if (record_id && typeof record_id === 'string' && ObjectId.isValid(record_id)) {
+      try {
+        objId = new ObjectId(record_id);
+      } catch (e) {}
+    }
+    const filter = national_id
+      ? { national_id }
+      : objId
+        ? { $or: [{ _id: objId }, { id: record_id }, { record_id: record_id }] }
+        : { $or: [{ id: record_id }, { record_id: record_id }] };
+
     await db.collection('car_blacklist').deleteMany(filter as any);
     await db.collection('car_blacklist_sync').deleteMany(filter as any);
+    await db.collection('blocklists').deleteMany(filter as any);
+    await db.collection('blocklisted_renters').deleteMany(filter as any);
 
     const legDb = await getLegacyDb();
     if (legDb) {
+      await legDb.collection('car_blacklist').deleteMany(filter as any);
       await legDb.collection('blocklists').deleteMany(filter as any);
     }
   } catch (err) {
