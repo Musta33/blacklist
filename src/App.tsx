@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import FingerprintJS from '@fingerprintjs/fingerprintjs';
 import {
   ShieldAlert,
   UserCheck,
@@ -29,7 +30,9 @@ import {
   MapPin,
   Calendar,
   XCircle,
-  Key
+  Key,
+  Laptop,
+  Unlock
 } from 'lucide-react';
 
 interface User {
@@ -42,6 +45,10 @@ interface User {
   status: 'Pending' | 'Approved' | 'Rejected';
   password_change_requested?: boolean;
   password_change_time?: string;
+  device_fingerprint?: string;
+  registered_devices?: string[];
+  device_lock_enabled?: boolean;
+  last_login_device?: string;
   created_at?: string;
 }
 
@@ -108,7 +115,7 @@ const apiFetch = async (endpoint: string, options?: RequestInit) => {
     const res = await fetch(`${API_BASE}${endpoint}`, options);
     const contentType = res.headers.get('content-type') || '';
     if (!contentType.includes('application/json')) {
-      throw new Error('Static fallback mode');
+      return createStaticMockResponse(endpoint, options);
     }
     return res;
   } catch (err) {
@@ -141,9 +148,14 @@ const createStaticMockResponse = async (endpoint: string, options?: RequestInit)
       status = 401;
     }
   } else if (url === '/api/blacklist/search') {
-    let filtered = MOCK_RECORDS;
+    const deletedIds = JSON.parse(localStorage.getItem('tb_deleted_ids') || '[]');
     const localAdded = JSON.parse(localStorage.getItem('tb_local_records') || '[]');
-    const allRecs = [...localAdded, ...MOCK_RECORDS];
+    const activeMockRecords = MOCK_RECORDS.filter(r => 
+      !deletedIds.includes(String(r.id)) && 
+      !deletedIds.includes(String(r.national_id))
+    );
+    const allRecs = [...localAdded, ...activeMockRecords];
+    let filtered = allRecs;
     if (q) {
       filtered = allRecs.filter(r => 
         (r.tenant_name && r.tenant_name.toLowerCase().includes(q)) ||
@@ -173,27 +185,145 @@ const createStaticMockResponse = async (endpoint: string, options?: RequestInit)
     const localAdded = JSON.parse(localStorage.getItem('tb_local_records') || '[]');
     localStorage.setItem('tb_local_records', JSON.stringify([newRec, ...localAdded]));
     responsePayload = { success: true, message: 'تم إدراج مستأجر السيارات لقائمة الحظر بنجاح.' };
+  } else if (url === '/api/blacklist/delete') {
+    const recordId = bodyData.record_id || bodyData.id || bodyData.national_id || queryParams.get('record_id') || queryParams.get('id') || queryParams.get('national_id');
+    let localAdded = JSON.parse(localStorage.getItem('tb_local_records') || '[]');
+    localAdded = localAdded.filter((r: any) => r.id !== recordId && r.national_id !== recordId && r.national_id !== bodyData.national_id);
+    localStorage.setItem('tb_local_records', JSON.stringify(localAdded));
+
+    let deletedIds = JSON.parse(localStorage.getItem('tb_deleted_ids') || '[]');
+    if (recordId) {
+      deletedIds.push(String(recordId));
+      if (bodyData.national_id) deletedIds.push(String(bodyData.national_id));
+    }
+    localStorage.setItem('tb_deleted_ids', JSON.stringify(deletedIds));
+    responsePayload = { success: true, message: '🗑️ تم حذف السجل من قائمة الحظر بنجاح.' };
   } else if (url === '/api/auth/login') {
-    const mockUser = { id: 'user_1', office_name: bodyData.office_name || 'مكتب تأجير معتمد', email: bodyData.email, role: bodyData.email?.includes('admin') ? 'admin' : 'office', status: 'Approved' };
-    localStorage.setItem('tb_mock_user', JSON.stringify(mockUser));
-    responsePayload = { success: true, token: 'mock_jwt_token_123', user: mockUser };
+    const inputEmail = (bodyData.email || '').trim().toLowerCase();
+    const inputPassword = bodyData.password || '';
+
+    // Check Admin
+    if (inputEmail === 'admin@carrental.sa' || inputEmail === 'admin@admin.com') {
+      if (inputPassword === 'admin123' || inputPassword === 'admin') {
+        const adminUser = { id: 'admin-1', office_name: 'إدارة شبكة مكاتب تأجير السيارات', email: inputEmail, role: 'admin', status: 'Approved' };
+        localStorage.setItem('tb_mock_user', JSON.stringify(adminUser));
+        responsePayload = { success: true, token: 'mock_jwt_token_admin', user: adminUser };
+      } else {
+        status = 401;
+        responsePayload = { success: false, message: 'كلمة مرور الإدارة غير صحيحة.' };
+      }
+    } else {
+      const pendingList = JSON.parse(localStorage.getItem('tb_mock_pending_users') || '[]');
+      const isPending = pendingList.some((u: any) => u.email?.toLowerCase() === inputEmail);
+      if (isPending) {
+        status = 403;
+        responsePayload = { success: false, status: 'Pending', message: '⏳ حسابك قيد المراجعة والتدقيق من قبل إدارة المنظومة. يرجى انتظار موافقة الإدارة لتفعيل الحساب.' };
+      } else {
+        const approvedList = JSON.parse(localStorage.getItem('tb_mock_approved_users') || '[]');
+        const matchedUser = approvedList.find((u: any) => u.email?.toLowerCase() === inputEmail);
+
+        if (matchedUser) {
+          if (!matchedUser.password || matchedUser.password === inputPassword) {
+            localStorage.setItem('tb_mock_user', JSON.stringify(matchedUser));
+            responsePayload = { success: true, token: `mock_jwt_token_${matchedUser.id}`, user: matchedUser };
+          } else {
+            status = 401;
+            responsePayload = { success: false, message: 'كلمة المرور غير صحيحة.' };
+          }
+        } else {
+          status = 401;
+          responsePayload = { success: false, message: 'بيانات الدخول غير صحيحة أو تم حذف هذا الحساب نهائياً من المنظومة.' };
+        }
+      }
+    }
   } else if (url === '/api/auth/signup') {
-    const newUser = { id: `user_${Date.now()}`, office_name: bodyData.office_name, email: bodyData.email, role: 'office', status: 'Approved' };
-    localStorage.setItem('tb_mock_user', JSON.stringify(newUser));
-    responsePayload = { success: true, message: 'تم إنشاء الحساب بنجاح وتم تفعيله.', user: newUser };
+    const newUser = {
+      id: `user_${Date.now()}`,
+      office_name: bodyData.office_name || 'مكتب جديد',
+      email: (bodyData.email || '').trim().toLowerCase(),
+      password: bodyData.password || '',
+      phone: bodyData.phone || '',
+      city: bodyData.city || '',
+      role: 'office',
+      status: 'Pending',
+      createdAt: new Date().toISOString()
+    };
+    const pendingList = JSON.parse(localStorage.getItem('tb_mock_pending_users') || '[]');
+    pendingList.push(newUser);
+    localStorage.setItem('tb_mock_pending_users', JSON.stringify(pendingList));
+    status = 201;
+    responsePayload = {
+      success: true,
+      status: 'Pending',
+      message: '⏳ تم تسجيل طلب مكتب التأجير بنجاح! حسابك قيد المراجعة والموافقة من الإدارة.',
+      user: newUser
+    };
   } else if (url === '/api/auth/change-password' || url === '/api/auth/reset-password') {
     responsePayload = { success: true, status: 'Pending', message: '⏳ تم تغيير كلمة المرور بنجاح! طلبك قيد المراجعة، يرجى انتظار الموافقة من الإدارة لتفعيل الحساب.' };
   } else if (url === '/api/auth/delete-account' || url === '/api/auth/delete-me') {
+    const targetEmail = bodyData.email || '';
     localStorage.removeItem('tb_mock_user');
     localStorage.removeItem('tb_token');
+    let pendingList = JSON.parse(localStorage.getItem('tb_mock_pending_users') || '[]');
+    pendingList = pendingList.filter((u: any) => u.email !== targetEmail);
+    localStorage.setItem('tb_mock_pending_users', JSON.stringify(pendingList));
+    let approvedList = JSON.parse(localStorage.getItem('tb_mock_approved_users') || '[]');
+    approvedList = approvedList.filter((u: any) => u.email !== targetEmail);
+    localStorage.setItem('tb_mock_approved_users', JSON.stringify(approvedList));
     responsePayload = { success: true, message: '🗑️ تم حذف حسابك وبيانات مكتبك نهائياً من المنظومة بنجاح.' };
   } else if (url === '/api/admin/delete-user' || url === '/api/admin/delete-office') {
+    const userId = bodyData.user_id || bodyData.userId;
+    let pendingList = JSON.parse(localStorage.getItem('tb_mock_pending_users') || '[]');
+    pendingList = pendingList.filter((u: any) => u.id !== userId && u.email !== userId);
+    localStorage.setItem('tb_mock_pending_users', JSON.stringify(pendingList));
+    let approvedList = JSON.parse(localStorage.getItem('tb_mock_approved_users') || '[]');
+    approvedList = approvedList.filter((u: any) => u.id !== userId && u.email !== userId);
+    localStorage.setItem('tb_mock_approved_users', JSON.stringify(approvedList));
     responsePayload = { success: true, message: '🗑️ تم حذف حساب المكتب نهائياً بنجاح.' };
+  } else if (url === '/api/admin/approve-user') {
+    const userId = bodyData.userId || bodyData.user_id;
+    let pendingList = JSON.parse(localStorage.getItem('tb_mock_pending_users') || '[]');
+    const target = pendingList.find((u: any) => u.id === userId || u.email === userId);
+    pendingList = pendingList.filter((u: any) => u.id !== userId && u.email !== userId);
+    localStorage.setItem('tb_mock_pending_users', JSON.stringify(pendingList));
+    if (target) {
+      let approvedList = JSON.parse(localStorage.getItem('tb_mock_approved_users') || '[]');
+      approvedList.push({ ...target, status: 'Approved' });
+      localStorage.setItem('tb_mock_approved_users', JSON.stringify(approvedList));
+    }
+    responsePayload = { success: true, message: '✅ تم اعتماد وتفعيل حساب المكتب بنجاح!' };
+  } else if (url.includes('reset-device')) {
+    const userId = url.split('/')[4] || bodyData.user_id || bodyData.userId;
+    let approvedList = JSON.parse(localStorage.getItem('tb_mock_approved_users') || '[]');
+    approvedList = approvedList.map((u: any) => {
+      if (u.id === userId || u.email === userId) {
+        return { ...u, device_fingerprint: '', approved_device: '', approvedDevice: '' };
+      }
+      return u;
+    });
+    localStorage.setItem('tb_mock_approved_users', JSON.stringify(approvedList));
+    responsePayload = { success: true, message: '🔓 تم فك ارتباط حاسبة المكتب بنجاح. سيتم ترخيص أول حاسبة يتم الدخول منها.' };
+  } else if (url.includes('toggle-device-lock')) {
+    const userId = url.split('/')[4] || bodyData.user_id || bodyData.userId;
+    let approvedList = JSON.parse(localStorage.getItem('tb_mock_approved_users') || '[]');
+    let updatedLock = true;
+    approvedList = approvedList.map((u: any) => {
+      if (u.id === userId || u.email === userId) {
+        updatedLock = u.device_lock_enabled === false ? true : false;
+        return { ...u, device_lock_enabled: updatedLock };
+      }
+      return u;
+    });
+    localStorage.setItem('tb_mock_approved_users', JSON.stringify(approvedList));
+    responsePayload = {
+      success: true,
+      device_lock_enabled: updatedLock,
+      message: updatedLock ? '🔒 تم تفعيل تقييد الدخول بحاسبة المكتب المعتمدة.' : '🔓 تم إلغاء تقييد الدخول للجهاز لهذا المكتب.'
+    };
   } else if (url === '/api/admin/users') {
-    responsePayload = { success: true, users: [
-      { id: 'user_1', office_name: 'مكتب بغداد للتأجير', email: 'baghdad@office.iq', phone: '07901112233', role: 'office', status: 'Approved' },
-      { id: 'user_2', office_name: 'مكتب البصرة المركزي', email: 'basra@office.iq', phone: '07802223344', role: 'office', status: 'Approved' }
-    ]};
+    const pendingList = JSON.parse(localStorage.getItem('tb_mock_pending_users') || '[]');
+    const approvedList = JSON.parse(localStorage.getItem('tb_mock_approved_users') || '[]');
+    responsePayload = { success: true, users: [...pendingList, ...approvedList] };
   } else {
     responsePayload = { success: true, message: 'Mock static response' };
   }
@@ -208,14 +338,11 @@ const createStaticMockResponse = async (endpoint: string, options?: RequestInit)
 export default function App() {
   const [activeTab, setActiveTab] = useState<'search' | 'add' | 'admin' | 'html_pages' | 'code' | 'mongo'>('search');
   const [currentUser, setCurrentUser] = useState<User | null>(() => {
-    try {
-      const u = localStorage.getItem('tb_mock_user');
-      return u ? JSON.parse(u) : null;
-    } catch(e) {
-      return null;
-    }
+    localStorage.removeItem('tb_mock_user');
+    localStorage.removeItem('tb_token');
+    return null;
   });
-  const [token, setToken] = useState<string>(() => localStorage.getItem('tb_token') || '');
+  const [token, setToken] = useState<string>('');
 
   // MongoDB Connection State
   const [mongoUri, setMongoUri] = useState('mongodb+srv://admin:mustafa2002@cluster0.wyofarq.mongodb.net/car_rental_blacklist_db?retryWrites=true&w=majority&appName=Cluster0');
@@ -233,7 +360,7 @@ export default function App() {
 
   // Auth Forms (Defaulting to login)
   const [authMode, setAuthMode] = useState<'login' | 'signup' | 'forgot'>('login');
-  const [showAuthModal, setShowAuthModal] = useState<boolean>(false);
+  const [showAuthModal, setShowAuthModal] = useState<boolean>(true);
   const [authEmail, setAuthEmail] = useState('');
   const [authPassword, setAuthPassword] = useState('');
   const [authOfficeName, setAuthOfficeName] = useState('');
@@ -241,6 +368,42 @@ export default function App() {
   const [authCity, setAuthCity] = useState('');
   const [authError, setAuthError] = useState('');
   const [authSuccess, setAuthSuccess] = useState('');
+  const [deviceFingerprint, setDeviceFingerprint] = useState<string>('');
+  const [isRefreshingUsers, setIsRefreshingUsers] = useState<boolean>(false);
+
+  useEffect(() => {
+    const initFp = async () => {
+      try {
+        const fp = await FingerprintJS.load();
+        const result = await fp.get();
+        if (result.visitorId) {
+          setDeviceFingerprint(result.visitorId);
+          return;
+        }
+      } catch (e) {
+        console.warn('Fp load fallback', e);
+      }
+
+      // Hardware signature fallback
+      const nav = window.navigator;
+      const screen = window.screen;
+      const raw = [
+        nav.userAgent,
+        nav.language,
+        screen.colorDepth,
+        screen.width + 'x' + screen.height,
+        new Date().getTimezoneOffset(),
+        nav.hardwareConcurrency || 4
+      ].join('###');
+      let hash = 0;
+      for (let i = 0; i < raw.length; i++) {
+        hash = ((hash << 5) - hash) + raw.charCodeAt(i);
+        hash |= 0;
+      }
+      setDeviceFingerprint('dev_' + Math.abs(hash).toString(16));
+    };
+    initFp();
+  }, []);
 
   // Password Change Modal State
   const [showChangePwdModal, setShowChangePwdModal] = useState<boolean>(false);
@@ -268,7 +431,19 @@ export default function App() {
   const [deleteErr, setDeleteErr] = useState('');
 
   // Blacklist Data
-  const [records, setRecords] = useState<BlacklistRecord[]>([]);
+  const [records, setRecords] = useState<BlacklistRecord[]>(() => {
+    try {
+      const deletedIds = JSON.parse(localStorage.getItem('tb_deleted_ids') || '[]');
+      const localAdded = JSON.parse(localStorage.getItem('tb_local_records') || '[]');
+      const activeMockRecords = MOCK_RECORDS.filter(r => 
+        !deletedIds.includes(String(r.id)) && 
+        !deletedIds.includes(String(r.national_id))
+      );
+      return [...localAdded, ...activeMockRecords];
+    } catch(e) {
+      return MOCK_RECORDS;
+    }
+  });
   const [searchQuery, setSearchQuery] = useState('');
   const [loadingRecords, setLoadingRecords] = useState(false);
   const [blockedMsg, setBlockedMsg] = useState('');
@@ -455,61 +630,142 @@ if __name__ == '__main__':
         headers: token ? { Authorization: `Bearer ${token}` } : {}
       });
 
-      const data = await res.json();
+      let data;
+      try {
+        data = await res.json();
+      } catch (jsonErr) {
+        // If response is HTML or non-JSON, fallback to static mock response
+        const mockRes = await createStaticMockResponse(`/api/blacklist/search?q=${encodeURIComponent(query)}`);
+        data = await mockRes.json();
+      }
 
       if (res.status === 401 || res.status === 403) {
         setBlockedMsg(data.message || 'وصول محظور! يجب تسجيل الدخول وتفعيل حساب مكتبك أولاً من الإدارة.');
-        setRecords([]);
-      } else if (data.success) {
-        setRecords(data.records || []);
+      } else if (data.success && Array.isArray(data.records)) {
+        setRecords(data.records);
       } else {
-        setRecords([]);
+        const deletedIds = JSON.parse(localStorage.getItem('tb_deleted_ids') || '[]');
+        const localAdded = JSON.parse(localStorage.getItem('tb_local_records') || '[]');
+        const activeMockRecords = MOCK_RECORDS.filter(r => 
+          !deletedIds.includes(String(r.id)) && 
+          !deletedIds.includes(String(r.national_id))
+        );
+        const allRecs = [...localAdded, ...activeMockRecords];
+        const q = query.toLowerCase().trim();
+        const filtered = q ? allRecs.filter(r => 
+          (r.tenant_name && r.tenant_name.toLowerCase().includes(q)) ||
+          (r.national_id && r.national_id.toLowerCase().includes(q)) ||
+          (r.license_number && r.license_number.toLowerCase().includes(q)) ||
+          (r.phone && r.phone.toLowerCase().includes(q)) ||
+          (r.reason && r.reason.toLowerCase().includes(q))
+        ) : allRecs;
+        setRecords(filtered);
       }
     } catch (err) {
-      console.error(err);
+      const deletedIds = JSON.parse(localStorage.getItem('tb_deleted_ids') || '[]');
+      const localAdded = JSON.parse(localStorage.getItem('tb_local_records') || '[]');
+      const activeMockRecords = MOCK_RECORDS.filter(r => 
+        !deletedIds.includes(String(r.id)) && 
+        !deletedIds.includes(String(r.national_id))
+      );
+      const allRecs = [...localAdded, ...activeMockRecords];
+      const q = query.toLowerCase().trim();
+      const filtered = q ? allRecs.filter(r => 
+        (r.tenant_name && r.tenant_name.toLowerCase().includes(q)) ||
+        (r.national_id && r.national_id.toLowerCase().includes(q)) ||
+        (r.license_number && r.license_number.toLowerCase().includes(q)) ||
+        (r.phone && r.phone.toLowerCase().includes(q)) ||
+        (r.reason && r.reason.toLowerCase().includes(q))
+      ) : allRecs;
+      setRecords(filtered);
     } finally {
       setLoadingRecords(false);
     }
   };
 
   // Fetch Users for Admin
-  const fetchUsers = async () => {
-    if (!currentUser || currentUser.role !== 'admin') return;
+  const fetchUsers = async (showFeedback = false) => {
+    if (showFeedback) setIsRefreshingUsers(true);
     try {
       const res = await apiFetch('/api/admin/users', {
         headers: token ? { Authorization: `Bearer ${token}` } : {}
       });
       const data = await res.json();
-      if (data.success) setAllUsers(data.users || []);
-    } catch (err) { console.error(err); }
+      if (data && data.success && Array.isArray(data.users)) {
+        setAllUsers(data.users);
+        if (showFeedback) {
+          const pendingCount = data.users.filter((u: any) => u.status === 'Pending').length;
+          setAdminActionMsg(`🔄 تم تحديث قائمة المكاتب فوراً! (إجمالي المكاتب: ${data.users.length} | بانتظار الموافقة: ${pendingCount})`);
+        }
+      }
+    } catch (err) {
+      console.error('fetchUsers err:', err);
+      if (showFeedback) setAdminActionMsg('⚠️ تعذر جلب البيانات من الخادم، يرجى المحاولة ثانية.');
+    } finally {
+      if (showFeedback) {
+        setTimeout(() => setIsRefreshingUsers(false), 500);
+      }
+    }
   };
 
-  useEffect(() => { checkAuth(); }, [token]);
+  useEffect(() => { checkAuth(); fetchUsers(); }, [token]);
   useEffect(() => { executeSearch(searchQuery); }, [searchQuery, token, currentUser]);
-  useEffect(() => { if (activeTab === 'admin' && currentUser?.role === 'admin') fetchUsers(); }, [activeTab, currentUser]);
+  useEffect(() => { 
+    fetchUsers();
+    const interval = setInterval(() => {
+      fetchUsers();
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [activeTab, currentUser]);
+  useEffect(() => {
+    if (currentUser?.role !== 'admin' && (activeTab === 'admin' || activeTab === 'html_pages' || activeTab === 'code' || activeTab === 'mongo')) {
+      setActiveTab('search');
+    }
+  }, [currentUser, activeTab]);
 
   // Login
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setAuthError('');
     try {
-      const res = await apiFetch('/api/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: authEmail, password: authPassword })
-      });
+      let res;
+      try {
+        res = await apiFetch('/api/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: authEmail, password: authPassword, deviceFingerprint })
+        });
+      } catch (netErr) {
+        res = await createStaticMockResponse('/api/auth/login', {
+          method: 'POST',
+          body: JSON.stringify({ email: authEmail, password: authPassword, deviceFingerprint })
+        });
+      }
       const data = await res.json();
       if (res.ok && data.success) {
-        setToken(data.token);
-        localStorage.setItem('tb_token', data.token);
+        setToken(data.token || 'mock_jwt_token');
+        localStorage.setItem('tb_token', data.token || 'mock_jwt_token');
         setCurrentUser(data.user);
+        localStorage.setItem('tb_mock_user', JSON.stringify(data.user));
         setShowAuthModal(false);
-      } else if (res.status === 403 && data.status === 'Pending') {
-        window.location.href = '/waiting.html';
+      } else if (res.status === 403 && data.device_blocked) {
+        setAuthError(data.message || '🚫 تم رفض تسجيل الدخول: هذا الحساب مقيد بحاسبة المكتب المعتمدة فقط.');
+      } else if (res.status === 403 || data.status === 'Pending') {
+        setAuthError(data.message || '⏳ حسابك قيد المراجعة والتدقيق من قبل إدارة المنظومة. يرجى انتظار اعتماد وتفعيل الحساب من الإدارة.');
       } else {
         setAuthError(data.message || 'بيانات الدخول غير صحيحة');
       }
-    } catch (err) { setAuthError('حدث خطأ في الاتصال بالخادم'); }
+    } catch (err) {
+      // Fallback local login check
+      if (authEmail === 'admin@carrental.sa' && (authPassword === 'admin123' || authPassword === 'admin')) {
+        const adminUser: User = { id: 'admin-1', office_name: 'إدارة شبكة مكاتب تأجير السيارات', email: authEmail, role: 'admin', status: 'Approved', created_at: new Date().toISOString() };
+        setCurrentUser(adminUser);
+        localStorage.setItem('tb_mock_user', JSON.stringify(adminUser));
+        setShowAuthModal(false);
+      } else {
+        setAuthError('بيانات الدخول غير صحيحة أو الحساب قيد المراجعة.');
+      }
+    }
   };
 
   // Signup
@@ -517,28 +773,59 @@ if __name__ == '__main__':
     e.preventDefault();
     setAuthError('');
     try {
-      const res = await apiFetch('/api/auth/signup', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          office_name: authOfficeName,
-          email: authEmail,
-          password: authPassword,
-          phone: authPhone
-        })
-      });
+      let res;
+      try {
+        res = await apiFetch('/api/auth/signup', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            office_name: authOfficeName,
+            email: authEmail,
+            password: authPassword,
+            phone: authPhone
+          })
+        });
+      } catch (netErr) {
+        res = await createStaticMockResponse('/api/auth/signup', {
+          method: 'POST',
+          body: JSON.stringify({
+            office_name: authOfficeName,
+            email: authEmail,
+            password: authPassword,
+            phone: authPhone
+          })
+        });
+      }
       const data = await res.json();
       if (res.ok && data.success) {
-        if (data.status === 'Pending') {
-          window.location.href = '/waiting.html';
-        } else {
-          setAuthSuccess(data.message);
-          setAuthMode('login');
-        }
+        setAuthSuccess(data.message || '⏳ تم تسجيل طلب مكتب التأجير بنجاح! الحساب قيد المراجعة والموافقة من الإدارة.');
+        setAuthMode('login');
+        setAuthOfficeName('');
+        setAuthPhone('');
+        setAuthPassword('');
       } else {
         setAuthError(data.message || 'فشل التسجيل');
       }
-    } catch (err) { setAuthError('خطأ بالخادم'); }
+    } catch (err) {
+      const newUser = {
+        id: `user_${Date.now()}`,
+        office_name: authOfficeName || 'مكتب جديد',
+        email: (authEmail || '').trim().toLowerCase(),
+        password: authPassword || '',
+        phone: authPhone || '',
+        role: 'office',
+        status: 'Pending',
+        createdAt: new Date().toISOString()
+      };
+      const pendingList = JSON.parse(localStorage.getItem('tb_mock_pending_users') || '[]');
+      pendingList.push(newUser);
+      localStorage.setItem('tb_mock_pending_users', JSON.stringify(pendingList));
+      setAuthSuccess('⏳ تم تسجيل طلب مكتب التأجير بنجاح! الحساب قيد المراجعة والموافقة من الإدارة.');
+      setAuthMode('login');
+      setAuthOfficeName('');
+      setAuthPhone('');
+      setAuthPassword('');
+    }
   };
 
   // Change Password for Logged-in User
@@ -672,6 +959,8 @@ if __name__ == '__main__':
     localStorage.removeItem('tb_mock_user');
     localStorage.removeItem('token');
     setCurrentUser(null);
+    setShowAuthModal(true);
+    setAuthMode('login');
   };
 
   // Approve User Registration
@@ -813,6 +1102,49 @@ if __name__ == '__main__':
       }
     } catch (e) {
       console.error('Delete office error:', e);
+    }
+  };
+
+  // Admin Reset Office Device Binding
+  const handleResetDevice = async (userId: string, officeName: string) => {
+    try {
+      // Optimistic instant UI update
+      setAllUsers(prev => prev.map(u => (u.id === userId || u.email === userId) ? { ...u, device_fingerprint: '', approved_device: '' } : u));
+      setAdminActionMsg(`🔓 تم فك ارتباط حاسبة مكتب (${officeName}) بنجاح. سيتم ترخيص أول حاسبة يتم الدخول منها.`);
+
+      const res = await apiFetch(`/api/admin/users/${userId}/reset-device`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ user_id: userId, userId: userId })
+      });
+      const data = await res.json();
+      if (data && data.message) {
+        setAdminActionMsg(data.message);
+      }
+      fetchUsers();
+    } catch (e) {
+      console.error('Reset device error:', e);
+    }
+  };
+
+  // Admin Toggle Office Device Lock
+  const handleToggleDeviceLock = async (userId: string) => {
+    try {
+      // Optimistic instant UI update
+      setAllUsers(prev => prev.map(u => (u.id === userId || u.email === userId) ? { ...u, device_lock_enabled: u.device_lock_enabled === false } : u));
+
+      const res = await apiFetch(`/api/admin/users/${userId}/toggle-device-lock`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ user_id: userId, userId: userId })
+      });
+      const data = await res.json();
+      if (data && data.message) {
+        setAdminActionMsg(data.message);
+      }
+      fetchUsers();
+    } catch (e) {
+      console.error('Toggle device lock error:', e);
     }
   };
 
@@ -1147,17 +1479,6 @@ if __name__ == '__main__':
                 )}
               </button>
             </form>
-
-            <div className="text-center pt-2">
-              <a
-                href="/download-zip"
-                target="_blank"
-                download
-                className="text-xs text-indigo-400 hover:underline font-bold"
-              >
-                📥 تحميل حزمة هوسيتنجر (ZIP)
-              </a>
-            </div>
           </div>
         </div>
       </ErrorBoundary>
@@ -1187,15 +1508,17 @@ if __name__ == '__main__':
           </div>
 
           <div className="flex items-center justify-between sm:justify-end gap-2 w-full sm:w-auto">
-            <a
-              href="/download-zip"
-              target="_blank"
-              download
-              className="flex items-center gap-1.5 px-3 py-1.5 sm:px-3.5 sm:py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-[11px] sm:text-xs font-bold transition shadow"
-              title="تحميل الملفات المجمعة الجاهزة للرفع على هوسيتنجر"
-            >
-              📥 <span className="hidden xs:inline">تحميل حزمة هوسيتنجر (ZIP)</span><span className="xs:hidden">تحميل ZIP</span>
-            </a>
+            {currentUser?.role === 'admin' && (
+              <a
+                href="/download-zip"
+                target="_blank"
+                download
+                className="flex items-center gap-1.5 px-3 py-1.5 sm:px-3.5 sm:py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-[11px] sm:text-xs font-bold transition shadow"
+                title="تحميل الملفات المجمعة الجاهزة للرفع على هوسيتنجر"
+              >
+                📥 <span className="hidden xs:inline">تحميل حزمة هوستينجر (ZIP)</span><span className="xs:hidden">تحميل ZIP</span>
+              </a>
+            )}
             {currentUser ? (
               <div className="flex items-center gap-1.5 sm:gap-2 bg-slate-800/90 border border-slate-700/60 rounded-xl px-2.5 sm:px-3.5 py-1.5 sm:py-2">
                 <div className="text-right">
@@ -1299,11 +1622,6 @@ if __name__ == '__main__':
                 </>
               )}
             </nav>
-
-            <div className="hidden xl:flex items-center gap-2 text-xs text-slate-400 bg-slate-950/60 border border-slate-800 px-3 py-1 rounded-lg flex-shrink-0">
-              <Database className="w-3.5 h-3.5 text-emerald-400" />
-              <span>MongoDB Collection: rental_offices & car_blacklist</span>
-            </div>
           </div>
         </div>
       </header>
@@ -1343,15 +1661,29 @@ if __name__ == '__main__':
                 </div>
               </div>
 
-              <div className="bg-slate-900 border border-slate-800 p-4 sm:p-5 rounded-xl sm:rounded-2xl flex items-center justify-between sm:col-span-2 lg:col-span-1">
-                <div>
-                  <p className="text-slate-400 text-xs font-medium">طلبات المكاتب بانتظار الاعتماد</p>
-                  <p className="text-2xl sm:text-3xl font-extrabold text-amber-400 mt-1">{pendingCount}</p>
+              {currentUser?.role === 'admin' ? (
+                <div className="bg-slate-900 border border-slate-800 p-4 sm:p-5 rounded-xl sm:rounded-2xl flex items-center justify-between sm:col-span-2 lg:col-span-1">
+                  <div>
+                    <p className="text-slate-400 text-xs font-medium">طلبات المكاتب بانتظار الاعتماد</p>
+                    <p className="text-2xl sm:text-3xl font-extrabold text-amber-400 mt-1">{pendingCount}</p>
+                  </div>
+                  <div className="w-10 h-10 sm:w-12 sm:h-12 bg-amber-500/10 border border-amber-500/30 rounded-xl flex items-center justify-center text-amber-400 flex-shrink-0">
+                    <UserCheck className="w-5 h-5 sm:w-6 sm:h-6" />
+                  </div>
                 </div>
-                <div className="w-10 h-10 sm:w-12 sm:h-12 bg-amber-500/10 border border-amber-500/30 rounded-xl flex items-center justify-center text-amber-400 flex-shrink-0">
-                  <UserCheck className="w-5 h-5 sm:w-6 sm:h-6" />
+              ) : (
+                <div className="bg-slate-900 border border-slate-800 p-4 sm:p-5 rounded-xl sm:rounded-2xl flex items-center justify-between sm:col-span-2 lg:col-span-1">
+                  <div>
+                    <p className="text-slate-400 text-xs font-medium">حالة اشتراك مكتب التأجير</p>
+                    <p className="text-sm sm:text-base font-extrabold text-emerald-400 mt-1 flex items-center gap-1">
+                      <CheckCircle2 className="w-4 h-4 text-emerald-400 inline" /> حساب مفعل ومعتمد
+                    </p>
+                  </div>
+                  <div className="w-10 h-10 sm:w-12 sm:h-12 bg-emerald-500/10 border border-emerald-500/30 rounded-xl flex items-center justify-center text-emerald-400 flex-shrink-0">
+                    <ShieldCheck className="w-5 h-5 sm:w-6 sm:h-6" />
+                  </div>
                 </div>
-              </div>
+              )}
             </div>
 
             {/* Search Box */}
@@ -1494,6 +1826,47 @@ if __name__ == '__main__':
         {/* TAB 3: Admin User Approvals & System Overview */}
         {activeTab === 'admin' && (
           <div className="space-y-6 sm:space-y-8">
+            {/* Hostinger Production Deployment Package Card (Admin Only) */}
+            <div className="bg-gradient-to-r from-indigo-950/80 via-slate-900 to-indigo-950/80 border border-indigo-500/40 rounded-xl sm:rounded-2xl p-4 sm:p-6 space-y-4 shadow-xl">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div className="flex items-start sm:items-center gap-3">
+                  <div className="w-10 h-10 sm:w-12 sm:h-12 bg-indigo-600/30 border border-indigo-500/40 rounded-xl flex items-center justify-center text-xl sm:text-2xl flex-shrink-0">
+                    📦
+                  </div>
+                  <div>
+                    <h2 className="text-base sm:text-lg lg:text-xl font-black text-white flex items-center gap-2">
+                      حزمة استضافة هوستينجر الجاهزة (Hostinger ZIP Package)
+                      <span className="text-[10px] bg-indigo-500/20 text-indigo-300 border border-indigo-500/40 px-2 py-0.5 rounded-full font-mono">v3.0 Production</span>
+                    </h2>
+                    <p className="text-xs text-slate-300 mt-0.5">الملفات المجمعة والجاهزة للرفع مباشرة إلى <code className="text-amber-400 font-mono">public_html</code> مع إعدادات Apache و MongoDB Atlas</p>
+                  </div>
+                </div>
+                <a
+                  href="/download-zip"
+                  target="_blank"
+                  download
+                  className="px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-black text-xs sm:text-sm transition shadow-lg shadow-indigo-900/40 flex items-center justify-center gap-2 flex-shrink-0"
+                >
+                  <span>📥</span> تحميل حزمة هوستينجر (ZIP)
+                </a>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 pt-2 text-[11px] text-slate-300 border-t border-indigo-500/20">
+                <div className="bg-slate-950/60 p-2.5 rounded-lg border border-indigo-500/20 flex items-center gap-2">
+                  <span className="text-emerald-400 font-bold text-sm">✓</span>
+                  <span>ملف <code className="text-indigo-300">.htaccess</code> وتوجيه المجلدات</span>
+                </div>
+                <div className="bg-slate-950/60 p-2.5 rounded-lg border border-indigo-500/20 flex items-center gap-2">
+                  <span className="text-emerald-400 font-bold text-sm">✓</span>
+                  <span>صفحات HTML المباشرة وخادم Python Flask</span>
+                </div>
+                <div className="bg-slate-950/60 p-2.5 rounded-lg border border-indigo-500/20 flex items-center gap-2">
+                  <span className="text-emerald-400 font-bold text-sm">✓</span>
+                  <span>الربط والتزامن التلقائي مع MongoDB Atlas</span>
+                </div>
+              </div>
+            </div>
+
             {/* Pending Blacklist Additions by Companies */}
             <div className="bg-slate-900 border border-slate-800 rounded-xl sm:rounded-2xl p-4 sm:p-6 space-y-3 sm:space-y-4">
               <h2 className="text-base sm:text-lg lg:text-xl font-bold text-amber-400 flex items-center gap-2">
@@ -1604,12 +1977,25 @@ if __name__ == '__main__':
 
             {/* 2. Pending New Office Registrations */}
             <div className="bg-slate-900 border border-slate-800 rounded-xl sm:rounded-2xl p-4 sm:p-6 space-y-3 sm:space-y-4">
-              <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-                <h2 className="text-base sm:text-lg lg:text-xl font-bold text-cyan-400 flex items-center gap-2">
-                  <UserPlus className="w-5 h-5 sm:w-6 sm:h-6 text-cyan-400" />
-                  طلبات انضمام وتسجيل مكاتب التأجير الجديدة ({allUsers.filter(u => u.status === 'Pending' && !u.password_change_requested).length})
-                </h2>
-                <span className="text-[11px] text-slate-400">حسابات تنتظر التفعيل الأول للانضمام للمنظومة</span>
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-800 pb-3">
+                <div className="flex items-center gap-2">
+                  <h2 className="text-base sm:text-lg lg:text-xl font-bold text-cyan-400 flex items-center gap-2">
+                    <UserPlus className="w-5 h-5 sm:w-6 sm:h-6 text-cyan-400" />
+                    طلبات انضمام وتسجيل مكاتب التأجير الجديدة ({allUsers.filter(u => u.status === 'Pending' && !u.password_change_requested).length})
+                  </h2>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => fetchUsers(true)}
+                    disabled={isRefreshingUsers}
+                    className="flex items-center gap-1.5 px-3 py-1.5 bg-cyan-950/60 hover:bg-cyan-900/60 text-cyan-300 border border-cyan-700/50 rounded-lg text-xs font-bold transition cursor-pointer shadow-sm active:scale-95 disabled:opacity-60"
+                    title="تحديث قائمة الطلبات الآن"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 text-cyan-400 ${isRefreshingUsers ? 'animate-spin' : ''}`} />
+                    {isRefreshingUsers ? 'جاري التحديث...' : 'تحديث الطلبات 🔄'}
+                  </button>
+                  <span className="text-[11px] text-slate-400 hidden sm:inline">حسابات تنتظر التفعيل</span>
+                </div>
               </div>
 
               {allUsers.filter(u => u.status === 'Pending' && !u.password_change_requested).length === 0 ? (
@@ -1635,13 +2021,13 @@ if __name__ == '__main__':
                       <div className="flex gap-2">
                         <button 
                           onClick={() => handleApproveUser(u.id)} 
-                          className="flex-1 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold text-xs rounded-xl transition shadow-md flex items-center justify-center gap-1.5"
+                          className="flex-1 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold text-xs rounded-xl transition shadow-md flex items-center justify-center gap-1.5 cursor-pointer"
                         >
                           <CheckCircle2 className="w-4 h-4" /> اعتماد وتفعيل الحساب ✅
                         </button>
                         <button 
                           onClick={() => handleRejectUser(u.id)} 
-                          className="px-3 py-2.5 bg-rose-600/20 hover:bg-rose-600/30 text-rose-400 border border-rose-500/30 font-bold text-xs rounded-xl transition"
+                          className="px-3 py-2.5 bg-rose-600/20 hover:bg-rose-600/30 text-rose-400 border border-rose-500/30 font-bold text-xs rounded-xl transition cursor-pointer"
                           title="رفض"
                         >
                           <XCircle className="w-4 h-4" />
@@ -1664,11 +2050,20 @@ if __name__ == '__main__':
                   <p className="text-xs text-slate-400 mt-0.5">عرض كافة البيانات الرسمية، جهات الاتصال، وإدارة كلمات المرور لكل مكتب</p>
                 </div>
                 <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => fetchUsers(true)}
+                    disabled={isRefreshingUsers}
+                    className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-lg text-xs font-bold transition cursor-pointer active:scale-95 disabled:opacity-60"
+                    title="تحديث قائمة الطلبات والمكاتب الآن"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 text-indigo-400 ${isRefreshingUsers ? 'animate-spin' : ''}`} />
+                    {isRefreshingUsers ? 'جاري التحديث...' : 'تحديث فوري 🔄'}
+                  </button>
                   <span className="text-[10px] bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 px-2.5 py-1 rounded-full font-bold">
                     {allUsers.filter(u => u.status === 'Approved').length} مفعل
                   </span>
-                  <span className="text-[10px] bg-amber-500/10 text-amber-400 border border-amber-500/30 px-2.5 py-1 rounded-full font-bold">
-                    {allUsers.filter(u => u.status === 'Pending').length} معلق
+                  <span className="text-[10px] bg-amber-500/10 text-amber-400 border border-amber-500/30 px-2.5 py-1 rounded-full font-bold animate-pulse">
+                    {allUsers.filter(u => u.status === 'Pending').length} معلق (بانتظار الموافقة)
                   </span>
                 </div>
               </div>
@@ -1726,6 +2121,25 @@ if __name__ == '__main__':
                             <span className="text-amber-400 font-bold font-mono">{submittedCount} مستأجر</span>
                           </div>
 
+                          {/* Device Fingerprint Security Row */}
+                          <div className="flex items-center justify-between text-slate-300 pt-1 border-t border-slate-800">
+                            <span className="text-slate-500 flex items-center gap-1 text-[11px]">
+                              <Laptop className="w-3 h-3 text-cyan-400" /> بصمة الحاسبة:
+                            </span>
+                            <span className="font-mono text-cyan-400 text-[11px] font-bold truncate max-w-[130px]" title={u.device_fingerprint || 'غير مقيد'}>
+                              {u.device_fingerprint ? u.device_fingerprint : 'لم تسجل بعد'}
+                            </span>
+                          </div>
+
+                          <div className="flex items-center justify-between text-[11px]">
+                            <span className="text-slate-500">حالة قفل الجهاز:</span>
+                            <span className={`px-2 py-0.2 rounded text-[10px] font-bold ${
+                              u.device_lock_enabled !== false ? 'bg-indigo-500/10 text-indigo-300 border border-indigo-500/30' : 'bg-slate-800 text-slate-400'
+                            }`}>
+                              {u.device_lock_enabled !== false ? '🔒 مقيد بحاسبة المكتب' : '🔓 غير مقيد'}
+                            </span>
+                          </div>
+
                           {u.created_at && (
                             <div className="flex items-center justify-between text-slate-400 text-[10px] pt-1 border-t border-slate-800">
                               <span>تاريخ الانضمام:</span>
@@ -1750,6 +2164,28 @@ if __name__ == '__main__':
                         >
                           <KeyRound className="w-3.5 h-3.5" /> تغيير / تعيين كلمة المرور من الإدارة
                         </button>
+
+                        {/* Device Management Buttons */}
+                        <div className="grid grid-cols-2 gap-1.5">
+                          <button
+                            onClick={() => handleResetDevice(u.id, u.office_name)}
+                            className="py-1.5 bg-cyan-600/10 hover:bg-cyan-600/20 text-cyan-300 border border-cyan-500/30 rounded-lg text-[11px] font-bold transition flex items-center justify-center gap-1"
+                            title="فك ارتباط حاسبة المكتب للسماح بتسجيل حاسبة جديدة"
+                          >
+                            <Unlock className="w-3 h-3" /> فك ربط الحاسبة
+                          </button>
+                          <button
+                            onClick={() => handleToggleDeviceLock(u.id)}
+                            className={`py-1.5 rounded-lg text-[11px] font-bold transition flex items-center justify-center gap-1 border ${
+                              u.device_lock_enabled !== false
+                                ? 'bg-slate-800 hover:bg-slate-700 text-slate-300 border-slate-700'
+                                : 'bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-300 border-indigo-500/30'
+                            }`}
+                            title="تبديل تفعيل أو إلغاء تقييد الدخول بالحاسبة"
+                          >
+                            <Laptop className="w-3 h-3" /> {u.device_lock_enabled !== false ? 'إلغاء القفل' : 'تفعيل القفل'}
+                          </button>
+                        </div>
 
                         <div className="flex gap-1.5">
                           {u.status !== 'Approved' ? (

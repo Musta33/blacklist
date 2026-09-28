@@ -14,7 +14,17 @@
     <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
   </head>
   <body class="font-['Cairo',sans-serif] bg-slate-950 text-slate-100 antialiased">
-    <div id="root"></div>
+    <div id="root">
+      <div style="min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; background-color: #020617; color: #f8fafc; font-family: 'Cairo', sans-serif; text-align: center; padding: 20px;">
+        <div style="width: 64px; height: 64px; background: linear-gradient(135deg, #e11d48, #d97706); border-radius: 16px; display: flex; align-items: center; justify-content: center; font-size: 32px; margin-bottom: 20px; box-shadow: 0 10px 25px rgba(225, 29, 72, 0.3);">🏎️</div>
+        <h2 style="font-size: 22px; font-weight: 800; margin-bottom: 8px;">منظومة حظر مستأجري السيارات الموحدة</h2>
+        <p style="color: #94a3b8; font-size: 13px; margin-bottom: 24px;">جاري تشغيل المنظومة والاتصال السحابي المباشر...</p>
+        <div style="display: flex; gap: 12px; flex-wrap: wrap; justify-content: center;">
+          <a href="./login.html" style="background: #e11d48; color: #ffffff; padding: 10px 20px; border-radius: 12px; text-decoration: none; font-size: 13px; font-weight: bold;">🔑 صفحة الدخول المباشرة</a>
+          <a href="./dashboard.html" style="background: #0f172a; color: #f8fafc; border: 1px solid #334155; padding: 10px 20px; border-radius: 12px; text-decoration: none; font-size: 13px; font-weight: bold;">📊 لوحة الاستعلام المباشرة</a>
+        </div>
+      </div>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

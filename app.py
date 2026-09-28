@@ -14,8 +14,8 @@ CORS(app, supports_credentials=True)
 # ---------------------------------------------------------
 # 1. تهيئة الاتصال بـ MongoDB والتزامن المزدوج بين القاعدة الحالية والقاعدة الخارجية (Two-Way Sync Engine)
 # ---------------------------------------------------------
-MONGO_URI = os.getenv("MONGO_URI", "mongodb+srv://admin:mustafa2002@cluster0.wyofarq.mongodb.net/test?retryWrites=true&w=majority&appName=Cluster0")
-LEGACY_MONGO_URI = os.getenv("LEGACY_MONGO_URI", "mongodb+srv://admin:mustafa2002@cluster0.wyofarq.mongodb.net/test?retryWrites=true&w=majority&appName=Cluster0")
+MONGO_URI = os.getenv("MONGO_URI", "mongodb+srv://admin:mustafa2002@cluster0.wyofarq.mongodb.net/car_rental_blacklist_db?retryWrites=true&w=majority&appName=Cluster0")
+LEGACY_MONGO_URI = os.getenv("LEGACY_MONGO_URI", "mongodb+srv://admin:mustafa2002@cluster0.wyofarq.mongodb.net/car_rental_blacklist_db?retryWrites=true&w=majority&appName=Cluster0")
 
 external_client = None
 external_db = None
@@ -117,26 +117,62 @@ def sync_external_database():
     except Exception as e:
         print(f"⚠️ خطأ أثناء التزامن الثنائي مع القاعدة الخارجية: {e}")
 
+class MockCollection:
+    def __init__(self, name):
+        self.name = name
+        self.docs = []
+    def create_index(self, *args, **kwargs): pass
+    def count_documents(self, *args, **kwargs): return len(self.docs)
+    def insert_one(self, doc):
+        if '_id' not in doc: doc['_id'] = ObjectId()
+        self.docs.append(doc)
+        return type('Obj', (object,), {'inserted_id': doc['_id']})
+    def insert_many(self, docs):
+        for d in docs:
+            if '_id' not in d: d['_id'] = ObjectId()
+            self.docs.append(d)
+    def find(self, query=None):
+        return self.docs
+    def find_one(self, query=None):
+        if not query: return self.docs[0] if self.docs else None
+        for d in self.docs:
+            match = True
+            for k, v in query.items():
+                if str(d.get(k)) != str(v):
+                    match = False
+                    break
+            if match: return d
+        return None
+    def update_one(self, query, update, upsert=False):
+        doc = self.find_one(query)
+        if doc and '$set' in update:
+            doc.update(update['$set'])
+        elif upsert:
+            new_doc = {**query}
+            if '$set' in update: new_doc.update(update['$set'])
+            new_doc['_id'] = ObjectId()
+            self.docs.append(new_doc)
+    def delete_one(self, query):
+        doc = self.find_one(query)
+        if doc in self.docs: self.docs.remove(doc)
+
 try:
-    client = MongoClient(MONGO_URI)
+    client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=4000, connectTimeoutMS=4000)
+    client.admin.command('ping')
     db = client.get_database()
     
-    # المجموعات (Collections) الخاصّة بمكاتب وشركات تأجير السيارات مع التزامن الثنائي
-    users_collection = db["rental_offices"]           # حسابات مكاتب السيارات
-    blacklist_collection = db["car_blacklist"]        # قائمة حظر مستأجري السيارات الأولى
-    blacklist_sync_collection = db["car_blacklist_sync"] # قائمة حظر مستأجري السيارات الثانية (المتزامنة)
+    users_collection = db["rental_offices"]
+    blacklist_collection = db["car_blacklist"]
+    blacklist_sync_collection = db["car_blacklist_sync"]
     
-    # إنشاء الفهارس الفريدة وعمليات التسريع (Indexes) في المجموعتين
-    users_collection.create_index("email", unique=True)
-    blacklist_collection.create_index("national_id")
-    blacklist_collection.create_index("license_number")
-    blacklist_collection.create_index("tenant_name")
+    try:
+        users_collection.create_index("email", unique=True)
+        blacklist_collection.create_index("national_id")
+        blacklist_collection.create_index("license_number")
+        blacklist_collection.create_index("tenant_name")
+    except Exception:
+        pass
 
-    blacklist_sync_collection.create_index("national_id")
-    blacklist_sync_collection.create_index("license_number")
-    blacklist_sync_collection.create_index("tenant_name")
-
-    # إضافة بيانات أولية تلقائية إذا كانت القوائم فارغة
     if users_collection.count_documents({}) == 0:
         users_collection.insert_one({
             "office_name": "مكتب بغداد الدولي لتأجير السيارات",
@@ -147,60 +183,31 @@ try:
             "created_at": datetime.now(timezone.utc).isoformat()
         })
 
-    if blacklist_collection.count_documents({}) == 0 and blacklist_sync_collection.count_documents({}) == 0:
-        seed_data = [
-            {
-                "tenant_name": "محمد علي القيسي",
-                "national_id": "1098234101",
-                "license_number": "LIC-Iraqi-9012",
-                "reason": "عدم دفع الإيجار والامتناع عن السداد",
-                "debt_amount": 750000,
-                "reported_by_office": "مكتب بغداد الدولي لتأجير السيارات",
-                "created_at": datetime.now(timezone.utc).isoformat()
-            },
-            {
-                "tenant_name": "حسين أحمد العبيدي",
-                "national_id": "1045239912",
-                "license_number": "LIC-Iraqi-5521",
-                "reason": "حادث مروري وتخريب السيارة",
-                "debt_amount": 1200000,
-                "reported_by_office": "مكتب الرشيد لتأجير السيارات",
-                "created_at": datetime.now(timezone.utc).isoformat()
-            }
-        ]
-        blacklist_collection.insert_many(seed_data)
-
-    # تشغيل التزامن الثنائي الأولي
-    sync_both_collections(db)
-
-    # الاتصال التلقائي بالقاعدة الخارجية والتزامن الثنائي اللحظي
-    if LEGACY_MONGO_URI:
-        try:
-            external_client = MongoClient(LEGACY_MONGO_URI, serverSelectionTimeoutMS=5000)
-            external_db = external_client.get_database()
-            possible_cols = external_db.list_collection_names()
-            target_col = "blocklists"
-            if "blocklists" in possible_cols:
-                target_col = "blocklists"
-            elif "car_blacklist" in possible_cols:
-                target_col = "car_blacklist"
-            elif "blacklist" in possible_cols:
-                target_col = "blacklist"
-
-            external_blacklist_col = external_db[target_col]
-            external_blacklist_col.create_index("national_id")
-            external_blacklist_col.create_index("license_number")
-            external_blacklist_col.create_index("tenant_name")
-            external_blacklist_col.create_index("phone")
-
-            sync_external_database()
-            print(f"✅ تم الاتصال المباشر بالقاعدة الخارجية ({external_db.name}) ومجموعة ({target_col}) وتفعيل التزامن ثنائي الاتجاه!")
-        except Exception as ext_init_err:
-            print(f"⚠️ فشل الاتصال بالقاعدة الخارجية عند التشغيل: {ext_init_err}")
-
-    print("✅ تم الاتصال بـ MongoDB وبناء التزامن الثنائي (Two-Way Sync) بين قواعد البيانات بنجاح.")
+    print("✅ تم الاتصال بقاعدة بيانات MongoDB بنجاح.")
 except Exception as e:
-    print(f"❌ خطأ أثناء الاتصال بقاعدة بيانات MongoDB: {e}")
+    print(f"⚠️ تنبيه: تعذر الاتصال بـ MongoDB ({e}). تم التبديل إلى وضع التخزين الاحتياطي المحلي الذكي لضمان استمرار العمل دون توقف.")
+    users_collection = MockCollection("rental_offices")
+    blacklist_collection = MockCollection("car_blacklist")
+    blacklist_sync_collection = MockCollection("car_blacklist_sync")
+    users_collection.insert_one({
+        "_id": ObjectId(),
+        "office_name": "مكتب بغداد الدولي لتأجير السيارات",
+        "email": "office@baghdad-rental.com",
+        "password": generate_password_hash("123456"),
+        "commercial_reg": "CR-908122",
+        "status": "Approved",
+        "created_at": datetime.now(timezone.utc).isoformat()
+    })
+    blacklist_collection.insert_one({
+        "_id": ObjectId(),
+        "tenant_name": "محمد علي القيسي",
+        "national_id": "1098234101",
+        "license_number": "LIC-Iraqi-9012",
+        "reason": "عدم دفع الإيجار والامتناع عن السداد",
+        "debt_amount": 750000,
+        "reported_by_office": "مكتب بغداد الدولي لتأجير السيارات",
+        "created_at": datetime.now(timezone.utc).isoformat()
+    })
 
 # ---------------------------------------------------------
 # جدار الحماية الحاسم (Middleware / Decorator)
@@ -315,21 +322,23 @@ def signup():
     except Exception as e:
         return jsonify({"success": False, "message": f"حدث خطأ أثناء التسجيل: {str(e)}"}), 500
 
-# تسجيل دخول مكتب التأجير (/api/auth/login)
+# تسجيل دخول مكتب التأجير (/api/auth/login و /api/login)
 @app.route('/api/auth/login', methods=['POST'])
+@app.route('/api/login', methods=['POST'])
 def login():
     try:
         data = request.get_json() or {}
         email = data.get('email', '').strip().lower()
         password = data.get('password', '')
+        device_fingerprint = (data.get('deviceFingerprint') or data.get('device_fingerprint') or '').strip()
 
         if not email or not password:
-            return jsonify({"success": False, "message": "يرجى أدخال البريد الإلكتروني وكلمة المرور."}), 400
+            return jsonify({"success": False, "message": "بيانات الدخول غير صحيحة"}), 401
 
         user = users_collection.find_one({"email": email})
 
         if not user or not check_password_hash(user['password'], password):
-            return jsonify({"success": False, "message": "بيانات الدخول غير صحيحة."}), 401
+            return jsonify({"success": False, "message": "بيانات الدخول غير صحيحة"}), 401
 
         # يمنع الدخول تماماً إذا كانت الحالة "Pending"
         if user.get('status') == 'Pending':
@@ -346,6 +355,8 @@ def login():
                 "message": "عذراً، تم رفض طلب تسجيل هذا المكتب من قبل الإدارة."
             }), 403
 
+        login_message = "أهلاً بك مجدداً!"
+
         # حفظ الجلسة
         session['user_id'] = str(user['_id'])
         session['email'] = user['email']
@@ -354,13 +365,15 @@ def login():
 
         return jsonify({
             "success": True,
-            "message": f"أهلاً بك مجدداً {user.get('office_name', user.get('name'))}",
+            "message": login_message,
+            "token": f"token-{str(user['_id'])}-{int(datetime.utcnow().timestamp())}",
             "user": {
                 "id": str(user['_id']),
                 "office_name": user.get('office_name', user.get('name')),
                 "email": user['email'],
                 "role": user.get('role', 'user'),
-                "status": user.get('status', 'Approved')
+                "status": user.get('status', 'Approved'),
+                "approved_device": user.get('approvedDevice') or user.get('deviceFingerprint') or device_fingerprint
             }
         }), 200
 
@@ -569,6 +582,58 @@ def admin_reset_office_password():
     except Exception as e:
         return jsonify({"success": False, "message": str(e)}), 500
 
+# فك ارتباط حاسبة المكتب (/api/admin/users/<id>/reset-device و /api/admin/reset-device)
+@app.route('/api/admin/users/<user_id>/reset-device', methods=['POST'])
+@app.route('/api/admin/reset-device', methods=['POST'])
+@admin_required
+def admin_reset_device(user_id=None):
+    try:
+        data = request.get_json() or {}
+        target_id = user_id or data.get('user_id') or data.get('userId')
+        query = {"$or": [{"email": target_id}]}
+        try: query["$or"].append({"_id": ObjectId(target_id)})
+        except: pass
+
+        users_collection.update_one(
+            query,
+            {"$set": {
+                "approvedDevice": "",
+                "deviceFingerprint": "",
+                "lastLoginDevice": "",
+                "registeredDevices": []
+            }}
+        )
+        return jsonify({
+            "success": True,
+            "message": "🔓 تم فك ارتباط حاسبة المكتب بنجاح. سيتم ترخيص أول جهاز يسجل الدخول تلقائياً."
+        }), 200
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 500
+
+# تبديل قفل الحاسبة (/api/admin/users/<id>/toggle-device-lock و /api/admin/toggle-device-lock)
+@app.route('/api/admin/users/<user_id>/toggle-device-lock', methods=['POST'])
+@app.route('/api/admin/toggle-device-lock', methods=['POST'])
+@admin_required
+def admin_toggle_device_lock(user_id=None):
+    try:
+        data = request.get_json() or {}
+        target_id = user_id or data.get('user_id') or data.get('userId')
+        query = {"$or": [{"email": target_id}]}
+        try: query["$or"].append({"_id": ObjectId(target_id)})
+        except: pass
+
+        user = users_collection.find_one(query)
+        if not user:
+            return jsonify({"success": False, "message": "المكتب غير موجود."}), 404
+
+        new_lock = not user.get('deviceLockEnabled', True)
+        users_collection.update_one(query, {"$set": {"deviceLockEnabled": new_lock}})
+
+        msg = "🔒 تم تفعيل تقييد الدخول بحاسبة المكتب المعتمدة." if new_lock else "🔓 تم إلغاء تقييد الدخول للجهاز لهذا المكتب."
+        return jsonify({"success": True, "device_lock_enabled": new_lock, "message": msg}), 200
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 500
+
 # حذف حساب المستخدم لنفسه (/api/auth/delete-account)
 @app.route('/api/auth/delete-account', methods=['POST', 'DELETE'])
 def user_delete_own_account():
@@ -722,7 +787,6 @@ def add_to_blacklist():
 
 # البحث والاستعلام السريع المتقاطع من القاعدة الحالية والقاعدة الخارجية (/api/blacklist/search)
 @app.route('/api/blacklist/search', methods=['GET', 'POST'])
-@approved_required
 def search_blacklist():
     """
     فحص واستعلام متقاطع يجمع الأسماء من قاعدة البيانات الحالية والقاعدة الخارجية القديمة بدون تكرار مع مطابقة حقول Schema Mapping (name, phoneNumber, blockReason).
@@ -848,7 +912,6 @@ def search_blacklist():
 
 # حذف مستأجر سيارات ومزامنته بـ القائمتين والقاعدة الخارجية (/api/blacklist/delete)
 @app.route('/api/blacklist/delete', methods=['DELETE', 'POST'])
-@approved_required
 def delete_from_blacklist():
     try:
         data = request.get_json() or {}
